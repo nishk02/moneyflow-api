@@ -31,7 +31,7 @@ public class ApiResponse<T> {
     }
 
     public static <T> ApiResponse<T> error(String code, String message) {
-        return new ApiResponse<>(false, message, null, new ApiError(code, message));
+        return new ApiResponse<>(false, null, null, new ApiError(code, message));
     }
 
     public record ApiError(String code, String message) {
