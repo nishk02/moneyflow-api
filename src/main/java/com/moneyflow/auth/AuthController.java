@@ -26,4 +26,13 @@ public class AuthController {
                 .status(HttpStatus.CREATED)
                 .body(ApiResponse.success(response, "Account created successfully"));
     }
+
+    @PostMapping("/signin")
+    public ResponseEntity<ApiResponse<AuthResponse>> signIn(
+            @Valid @RequestBody SignInRequest request
+    ) {
+        AuthResponse response = authService.signIn(request);
+
+        return ResponseEntity.ok(ApiResponse.success(response, "Signed in successfully"));
+    }
 }

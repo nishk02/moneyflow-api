@@ -1,6 +1,7 @@
 package com.moneyflow.auth;
 
 import com.moneyflow.shared.exception.ApiException;
+import com.moneyflow.shared.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Service;
 public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
 
     public AuthResponse signUp(SignUpRequest request) {
         if (userRepository.existsByEmail(request.email())) {
@@ -25,8 +27,20 @@ public class AuthService {
 
         User savedUser = userRepository.save(user);
 
-        String token = "placeholder-token";
+        String token = jwtUtil.generateToken(savedUser.getId(), savedUser.getEmail());
 
         return new AuthResponse(token, AuthResponse.UserSummary.from(savedUser));
+    }
+
+    public AuthResponse signIn(SignInRequest request) {
+        User user = userRepository.findByEmail(request.email())
+                .orElseThrow(() -> ApiException.unauthorized("Invalid email or password"));
+        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+            throw ApiException.unauthorized("Invalid email or password");
+        }
+
+        String token = jwtUtil.generateToken(user.getId(), user.getEmail());
+
+        return new AuthResponse(token, AuthResponse.UserSummary.from(user));
     }
 }
