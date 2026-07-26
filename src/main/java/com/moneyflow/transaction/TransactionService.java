@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 @Service
@@ -120,6 +121,51 @@ public class TransactionService {
         accountRepository.save(account);
 
         transactionRepository.delete(transaction);
+    }
+
+    // BR-01/BR-02: System-generated SETTLEMENT transactions
+
+    @Transactional
+    public void createOpeningBalanceSettlement(Account account, User user) {
+        Category adjustmentCategory = categoryRepository
+                .findById("cat-02")
+                .orElseThrow(() -> ApiException.notFound("Adjustment category not found"));
+
+        Transaction t = new Transaction();
+        t.setUser(user);
+        t.setAccount(account);
+        t.setCategory(adjustmentCategory);
+        t.setType(TransactionType.SETTLEMENT);
+        t.setAmount(account.getCurrentBalance());
+        t.setNotes("Opening balance");
+        t.setDate(LocalDate.now());
+        t.setPlanned(false);
+        FinancialYearUtil.applyDerivedDateFields(t, LocalDate.now());
+
+        transactionRepository.save(t);
+    }
+
+    @Transactional
+    public void createBalanceCorrectionSettlement(
+            Account account, User user, BigDecimal oldBalance, BigDecimal newBalance) {
+        Category adjustmentCategory = categoryRepository
+                .findById("cat-02")
+                .orElseThrow(() -> ApiException.notFound("Adjustment category not found"));
+
+        BigDecimal delta = newBalance.subtract(oldBalance).abs();
+
+        Transaction t = new Transaction();
+        t.setUser(user);
+        t.setAccount(account);
+        t.setCategory(adjustmentCategory);
+        t.setType(TransactionType.SETTLEMENT);
+        t.setAmount(delta);
+        t.setNotes(String.format("Balance adjustment: ₹%s → ₹%s", oldBalance, newBalance));
+        t.setDate(LocalDate.now());
+        t.setPlanned(false);
+        FinancialYearUtil.applyDerivedDateFields(t, LocalDate.now());
+
+        transactionRepository.save(t);
     }
 
     // Internal helpers

@@ -3,6 +3,8 @@ package com.moneyflow.account;
 import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
 import com.moneyflow.shared.exception.ApiException;
+import com.moneyflow.transaction.TransactionRepository;
+import com.moneyflow.transaction.TransactionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +17,7 @@ import java.util.List;
 public class AccountService {
     private final AccountRepository accountRepository;
     private final UserRepository userRepository;
+    private final TransactionService transactionService;
 
     public List<AccountResponse> getAccounts(String userId) {
         return accountRepository.findByUserIdAndActiveTrue(userId).stream().map(AccountResponse::from).toList();
@@ -30,8 +33,7 @@ public class AccountService {
 
     @Transactional
     public AccountResponse createAccount(String userId, CreateAccountRequest request) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> ApiException.notFound("User not found"));
+        User user = getUser(userId);
 
         if (accountRepository.existsByUserIdAndNameIgnoreCase(userId, request.name())) {
             throw ApiException.conflict("An account name '" + request.name() + "' already exists");
@@ -48,11 +50,10 @@ public class AccountService {
 
         Account savedAccount = accountRepository.save(account);
 
-        // TODO: BR-01: auto-create SETTLEMENT transaction for opening balance
-        // Wired here once TransactionService is built
-        // if (savedAccount.getCurrentBalance().compareTo(BigDecimal.ZERO) > 0) {
-        //     transactionService.createOpeningBalanceSettlement(savedAccount);
-        // }
+        // BR-01: auto-create SETTLEMENT transaction for opening balance
+        if (savedAccount.getCurrentBalance().compareTo(BigDecimal.ZERO) > 0) {
+            transactionService.createOpeningBalanceSettlement(savedAccount, user);
+        }
 
         return AccountResponse.from(savedAccount);
     }
@@ -95,13 +96,11 @@ public class AccountService {
 
         Account savedAccount = accountRepository.save(account);
 
-        // TODO: BR-02: auto-create SETTLEMENT transaction for balance correction
-        // Wired here once TransactionService is built
-        // if (request.currentBalance() != null
-        //     && request.currentBalance().compareTo(oldBalance) != 0) {
-        //     transactionService.createBalanceCorrectionSettlement(
-        //         savedAccount, oldBalance, request.currentBalance());
-        // }
+        // BR-02: auto-create SETTLEMENT transaction for balance correction
+        if (request.currentBalance() != null && request.currentBalance().compareTo(oldBalance) != 0) {
+            transactionService.createBalanceCorrectionSettlement(
+                 savedAccount, getUser(userId), oldBalance, request.currentBalance());
+        }
 
         return AccountResponse.from(savedAccount);
     }
@@ -113,5 +112,10 @@ public class AccountService {
 
         account.setActive(false);
         accountRepository.save(account);
+    }
+
+    private User getUser(String userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> ApiException.notFound("User not found"));
     }
 }
