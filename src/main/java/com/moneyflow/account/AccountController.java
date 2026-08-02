@@ -14,11 +14,11 @@ public class AccountController {
     private final AccountService accountService;
 
     @GetMapping
-    public ResponseEntity<ApiResponse<AccountSummaryResponse>> getAccounts() {
+    public ResponseEntity<ApiResponse<AccountSummaryResponse>> getAccounts(
+            @RequestParam(required = false) String type) {
         String userId = getCurrentUserId();
         return ResponseEntity.ok(
-                ApiResponse.success(accountService.getAccountsSummary(userId))
-        );
+                ApiResponse.success(accountService.getAccountsSummary(userId, type)));
     }
 
     @GetMapping("/{id}")

@@ -6,6 +6,8 @@ import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
 import com.moneyflow.category.Category;
 import com.moneyflow.category.CategoryRepository;
+import com.moneyflow.goal.Goal;
+import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +25,7 @@ public class TransactionService {
     private final AccountRepository accountRepository;
     private final UserRepository userRepository;
     private final CategoryRepository categoryRepository;
+    private final GoalRepository goalRepository;
 
     @Transactional(readOnly = true)
     public List<TransactionResponse> getTransactions(
@@ -61,6 +64,14 @@ public class TransactionService {
         Category category = categoryRepository.findById(request.categoryId())
                 .orElseThrow(() -> ApiException.notFound("Category not found"));
 
+        // BR-12: block direct expense transactions against goal-linked accounts
+        if (isGoalProtectedType(request.type())
+                && goalRepository.existsByAccountIdAndActiveTrueAndStatusNot(account.getId(), "COMPLETED")) {
+            throw ApiException.badRequest(
+                    "This account is linked to an active savings goals. " +
+                            " Use TRANSFER to move money out, or choose a different account.");
+        }
+
         validateTransferDestination(request);
 
         Account toAccount = resolveToAccount(request, userId);
@@ -71,6 +82,16 @@ public class TransactionService {
 
         accountRepository.save(account);
         if (toAccount != null) accountRepository.save(toAccount);
+
+        // BR-07: update goal progress when TRANSFER targets a goal
+        if (request.toGoalId() != null
+                && transaction.getType() == TransactionType.TRANSFER) {
+            goalRepository.findByIdAndUserId(request.toGoalId(), userId)
+                    .ifPresent(goal -> {
+                        goal.setCurrentProgress(goal.getCurrentProgress().add(request.amount()));
+                        goalRepository.save(goal);
+                    });
+        }
 
         Transaction saved = transactionRepository.save(transaction);
         return TransactionResponse.from(saved);
@@ -118,6 +139,20 @@ public class TransactionService {
 
         Account account = transaction.getAccount();
         reverseBalanceEffect(transaction, account);
+
+        // BR-07: reverse goal progress on delete
+        if (transaction.getType() == TransactionType.TRANSFER
+                && transaction.getToGoalId() != null) {
+            goalRepository.findByIdAndUserId(
+                            transaction.getToGoalId(), userId)
+                    .ifPresent(goal -> {
+                        goal.setCurrentProgress(
+                                goal.getCurrentProgress()
+                                        .subtract(transaction.getAmount()));
+                        goalRepository.save(goal);
+                    });
+        }
+
         accountRepository.save(account);
 
         transactionRepository.delete(transaction);
@@ -184,10 +219,32 @@ public class TransactionService {
     }
 
     private Account resolveToAccount(CreateTransactionRequest request, String userId) {
-        if (request.toAccountId() == null) return null;
+        if (request.toAccountId() != null) {
+            Account toAccount = accountRepository.findByIdAndUserId(request.toAccountId(), userId)
+                    .orElseThrow(() -> ApiException.notFound("Destination account not found"));
+            if (!toAccount.isActive()) {
+                throw ApiException.badRequest("Destination account is inactive");
+            }
+            return toAccount;
+        }
 
-        return accountRepository.findByIdAndUserId(request.toAccountId(), userId)
-                .orElseThrow(() -> ApiException.notFound("Destination account not found"));
+        if (request.toGoalId() != null) {
+            Goal goal = goalRepository.findByIdAndUserId(request.toGoalId(), userId)
+                    .orElseThrow(() -> ApiException.notFound("Goal not found"));
+            if (!goal.isActive()) {
+                throw ApiException.badRequest("Goal is inactive");
+            }
+            if ("COMPLETED".equals(goal.getStatus())) {
+                throw ApiException.badRequest("Cannot transfer to a completed goal");
+            }
+            Account goalAccount = goal.getAccount();
+            if (!goalAccount.isActive()) {
+                throw ApiException.badRequest("The account backing this goal is inactive");
+            }
+            return goalAccount;
+        }
+
+        return null;
     }
 
     private Transaction buildTransaction(
@@ -197,13 +254,16 @@ public class TransactionService {
         t.setUser(user);
         t.setAccount(account);
         t.setCategory(category);
-        t.setToAccount(toAccount);
-        t.setToGoalId(request.toGoalId());
         t.setType(request.type());
         t.setAmount(request.amount());
         t.setNotes(request.notes());
         t.setDate(request.date());
         t.setPlanned(false);
+        t.setToGoalId(request.toGoalId());
+
+        if (request.toAccountId() != null) {
+            t.setToAccount(toAccount);
+        }
 
         FinancialYearUtil.applyDerivedDateFields(t, request.date());
 
@@ -217,7 +277,7 @@ public class TransactionService {
                     account.getCurrentBalance().add(amount));
             case FIXED_EXPENSE, VARIABLE_EXPENSE,
                  LENDING, BORROWING, REPAYMENT -> account.setCurrentBalance(
-                         account.getCurrentBalance().subtract(amount));
+                    account.getCurrentBalance().subtract(amount));
             case TRANSFER -> {
                 account.setCurrentBalance(
                         account.getCurrentBalance().subtract(amount));
@@ -230,14 +290,21 @@ public class TransactionService {
     }
 
     private void reverseBalanceEffect(Transaction transaction, Account account) {
-        switch(transaction.getType()) {
+        switch (transaction.getType()) {
             case INCOME, SETTLEMENT -> account.setCurrentBalance(
                     account.getCurrentBalance().subtract(transaction.getAmount()));
             case FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING,
                  BORROWING, REPAYMENT -> account.setCurrentBalance(
-                         account.getCurrentBalance().add(transaction.getAmount()));
+                    account.getCurrentBalance().add(transaction.getAmount()));
             case TRANSFER -> account.setCurrentBalance(
                     account.getCurrentBalance().add(transaction.getAmount()));
         }
+    }
+
+    private boolean isGoalProtectedType(TransactionType type) {
+        return switch (type) {
+            case FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING, BORROWING, REPAYMENT -> true;
+            default -> false;
+        };
     }
 }

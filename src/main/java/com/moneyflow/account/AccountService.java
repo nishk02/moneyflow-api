@@ -3,7 +3,6 @@ package com.moneyflow.account;
 import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
 import com.moneyflow.shared.exception.ApiException;
-import com.moneyflow.transaction.TransactionRepository;
 import com.moneyflow.transaction.TransactionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -23,8 +22,11 @@ public class AccountService {
         return accountRepository.findByUserIdAndActiveTrue(userId).stream().map(AccountResponse::from).toList();
     }
 
-    public AccountSummaryResponse getAccountsSummary(String userId) {
-        List<AccountResponse> accounts = getAccounts(userId);
+    public AccountSummaryResponse getAccountsSummary(String userId, String type) {
+        List<AccountResponse> accounts = type != null
+                ? accountRepository.findByUserIdAndTypeAndActiveTrue(userId, type)
+                .stream().map(AccountResponse::from).toList()
+                : getAccounts(userId);
         BigDecimal totalBalance = accounts.stream()
                 .map(AccountResponse::currentBalance)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -99,7 +101,7 @@ public class AccountService {
         // BR-02: auto-create SETTLEMENT transaction for balance correction
         if (request.currentBalance() != null && request.currentBalance().compareTo(oldBalance) != 0) {
             transactionService.createBalanceCorrectionSettlement(
-                 savedAccount, getUser(userId), oldBalance, request.currentBalance());
+                    savedAccount, getUser(userId), oldBalance, request.currentBalance());
         }
 
         return AccountResponse.from(savedAccount);
