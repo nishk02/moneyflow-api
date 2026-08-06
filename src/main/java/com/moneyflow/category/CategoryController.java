@@ -1,6 +1,7 @@
 package com.moneyflow.category;
 
 import com.moneyflow.shared.dto.ApiResponse;
+import com.moneyflow.shared.security.BaseController;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,7 +13,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/categories")
 @RequiredArgsConstructor
-public class CategoryController {
+public class CategoryController extends BaseController {
     private final CategoryService categoryService;
 
     @GetMapping

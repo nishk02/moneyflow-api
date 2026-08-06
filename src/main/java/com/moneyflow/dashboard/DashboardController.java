@@ -1,6 +1,7 @@
 package com.moneyflow.dashboard;
 
 import com.moneyflow.shared.dto.ApiResponse;
+import com.moneyflow.shared.security.BaseController;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -10,7 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/dashboard")
 @RequiredArgsConstructor
-public class DashboardController {
+public class DashboardController extends BaseController {
     private final DashboardService dashboardService;
 
     @GetMapping
@@ -18,10 +19,5 @@ public class DashboardController {
         String userId = getCurrentUserId();
 
         return ResponseEntity.ok(ApiResponse.success(dashboardService.getDashboard(userId)));
-    }
-
-    private String getCurrentUserId() {
-        // TODO: replace with SecurityContext extraction when JWT active
-        return "hardcoded-dev-user-id";
     }
 }

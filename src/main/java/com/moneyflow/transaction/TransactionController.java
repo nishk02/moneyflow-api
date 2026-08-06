@@ -1,6 +1,7 @@
 package com.moneyflow.transaction;
 
 import com.moneyflow.shared.dto.ApiResponse;
+import com.moneyflow.shared.security.BaseController;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -10,7 +11,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/transactions")
 @RequiredArgsConstructor
-public class TransactionController {
+public class TransactionController extends BaseController {
     private final TransactionService transactionService;
 
     @GetMapping
@@ -54,10 +55,5 @@ public class TransactionController {
         String userId = getCurrentUserId();
         transactionService.deleteTransaction(userId, id);
         return ResponseEntity.ok(ApiResponse.success(null, "Transaction deleted successfully"));
-    }
-
-    private String getCurrentUserId() {
-        // TODO: replace with SecurityContext extraction when JWT active
-        return "HARD-CODED-USER-ID";
     }
 }

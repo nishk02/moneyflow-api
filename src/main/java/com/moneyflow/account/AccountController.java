@@ -1,6 +1,7 @@
 package com.moneyflow.account;
 
 import com.moneyflow.shared.dto.ApiResponse;
+import com.moneyflow.shared.security.BaseController;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -10,7 +11,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/accounts")
 @RequiredArgsConstructor
-public class AccountController {
+public class AccountController extends BaseController {
     private final AccountService accountService;
 
     @GetMapping
@@ -52,11 +53,5 @@ public class AccountController {
         String userId = getCurrentUserId();
         accountService.deleteAccount(userId, id);
         return ResponseEntity.ok(ApiResponse.success(null, "Account deleted successfully"));
-    }
-
-    private String getCurrentUserId() {
-        // TODO: replace with real SecurityContext extraction once prod profile
-        // JWT filter is active in this dev session
-        return "hardcoded-dev-user-id";
     }
 }

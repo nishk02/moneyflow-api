@@ -1,6 +1,7 @@
 package com.moneyflow.goal;
 
 import com.moneyflow.shared.dto.ApiResponse;
+import com.moneyflow.shared.security.BaseController;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -12,7 +13,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/goals")
 @RequiredArgsConstructor
-public class GoalController {
+public class GoalController extends BaseController {
     private final GoalService goalService;
 
     @GetMapping
@@ -58,11 +59,5 @@ public class GoalController {
         String userId = getCurrentUserId();
         goalService.reorderGoals(userId, request);
         return ResponseEntity.noContent().build();
-    }
-
-    private String getCurrentUserId() {
-        // TODO: replace with real SecurityContext extraction once prod profile
-        // JWT filter is active in this dev session
-        return "hardcoded-dev-user-id";
     }
 }
