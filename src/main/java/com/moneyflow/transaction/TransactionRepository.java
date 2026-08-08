@@ -5,6 +5,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,9 +30,31 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             "AND t.type IN :types " +
             "AND t.calendarYear = :year " +
             "AND t.calendarMonth = :month")
-    java.math.BigDecimal sumByUserIdAndTypesAndMonth(
+    BigDecimal sumByUserIdAndTypesAndMonth(
             @Param("userId") String userId,
             @Param("types") List<TransactionType> types,
             @Param("year") int year,
             @Param("month") int month);
+
+    @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
+            "WHERE t.user.id = :userId " +
+            "AND t.type IN :types " +
+            "AND t.date >= :from " +
+            "AND t.date <= :to")
+    BigDecimal sumByUserIdAndTypesAndDateRange(
+            @Param("userId") String userId,
+            @Param("types") List<TransactionType> types,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to);
+
+    @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
+            "WHERE t.user.id = :userId " +
+            "AND t.type = 'TRANSFER' " +
+            "AND t.toGoalId IS NOT NULL " +
+            "AND t.date >= :from " +
+            "AND t.date <= :to")
+    BigDecimal sumTransferToGoalByDateRange(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to);
 }

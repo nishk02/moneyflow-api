@@ -31,9 +31,20 @@ public class TransactionController extends BaseController {
     public ResponseEntity<ApiResponse<TransactionResponse>> createTransaction(
             @Valid @RequestBody CreateTransactionRequest request) {
         String userId = getCurrentUserId();
+        TransactionResult result = transactionService
+                .createTransaction(userId, request);
+
+        if (result.warning() != null) {
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(ApiResponse.successWithWarning(
+                            result.response(),
+                            "Transaction created successfully",
+                            result.warning()));
+        }
+
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(
-                        transactionService.createTransaction(userId, request),
+                        result.response(),
                         "Transaction created successfully"));
     }
 

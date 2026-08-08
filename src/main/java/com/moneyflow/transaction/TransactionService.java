@@ -55,7 +55,7 @@ public class TransactionService {
     }
 
     @Transactional
-    public TransactionResponse createTransaction(String userId, CreateTransactionRequest request) {
+    public TransactionResult createTransaction(String userId, CreateTransactionRequest request) {
         User user = userRepository.findById(userId).orElseThrow(() -> ApiException.notFound("User not found"));
 
         Account account = accountRepository.findByIdAndUserId(request.accountId(), userId)
@@ -94,7 +94,18 @@ public class TransactionService {
         }
 
         Transaction saved = transactionRepository.save(transaction);
-        return TransactionResponse.from(saved);
+        TransactionResponse response = TransactionResponse.from(saved);
+
+        // Only warn if backdated more than 7 days before account setup
+        LocalDate setupDate = account.getCreatedAt().toLocalDate();
+        String warning = request.date().isBefore(setupDate.minusDays(7))
+                ? "This transaction is dated before your account was " +
+                "set up (" + account.getCreatedAt().toLocalDate() + "). " +
+                "Your opening balance reflects your balance as of setup " +
+                "date — consider updating it if needed."
+                : null;
+
+        return new TransactionResult(response, warning);
     }
 
     @Transactional
