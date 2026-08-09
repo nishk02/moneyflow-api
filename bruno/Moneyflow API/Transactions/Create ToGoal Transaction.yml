@@ -1,0 +1,29 @@
+info:
+  name: Create ToGoal Transaction
+  type: http
+  seq: 6
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/api/transactions"
+  body:
+    type: json
+    data: |-
+      {
+        "date": "2026-07-04",
+        "type": "TRANSFER",
+        "categoryId": "cat-01",
+        "accountId": "6f31f86c-4dc6-4d31-9ff7-e61341455d79",
+        "toGoalId": "08ff975b-7551-48dc-bb0b-c531293fcc3b",
+        "amount": 5000,
+        "notes": "Moving money to savings"
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

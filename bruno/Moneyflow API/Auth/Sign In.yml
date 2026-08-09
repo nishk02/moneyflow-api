@@ -1,0 +1,31 @@
+info:
+  name: Sign In
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/auth/signin"
+  body:
+    type: json
+    data: |-
+      {
+        "email": "nishant@moneyflow.test",
+        "password": "SecurePass123"
+      }
+  auth: inherit
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body.success && res.body.data && res.body.data.token) {
+          const token = res.body.data.token;
+          bru.setEnvVar("AUTH_TOKEN", token);
+        }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

@@ -1,0 +1,23 @@
+info:
+  name: Update Transaction
+  type: http
+  seq: 5
+
+http:
+  method: PUT
+  url: "{{BASE_URL}}/api/transactions/d60093d6-cffe-4b87-b136-fec4a9eb6626"
+  body:
+    type: json
+    data: |-
+      {
+        "categoryId": "cat-09"
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

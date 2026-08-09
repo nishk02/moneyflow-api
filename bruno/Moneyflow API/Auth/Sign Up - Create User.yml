@@ -1,0 +1,24 @@
+info:
+  name: Sign Up - Create User
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/auth/signup"
+  body:
+    type: json
+    data: |-
+      {
+        "firstName": "Nishant",
+        "lastName": "Kumar",
+        "email": "nishant@moneyflow.test",
+        "password": "SecurePass123"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

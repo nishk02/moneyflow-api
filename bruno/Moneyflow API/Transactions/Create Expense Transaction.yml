@@ -1,0 +1,28 @@
+info:
+  name: Create Expense Transaction
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/api/transactions"
+  body:
+    type: json
+    data: |-
+      {
+        "date": "2026-07-04",
+        "type": "VARIABLE_EXPENSE",
+        "categoryId": "cat-12",
+        "accountId": "a985539e-e478-4e06-8fc7-9a01d32743e2",
+        "amount": 919.19,
+        "notes": "Vijetha"
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

@@ -1,0 +1,27 @@
+info:
+  name: Create Goal
+  type: http
+  seq: 6
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/api/goals"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Emergency Fund",
+        "targetAmount": 100000.00,
+        "accountId": "your-account-uuid",
+        "startDate": "2026-07-01",
+        "endDate": "2027-07-01"
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

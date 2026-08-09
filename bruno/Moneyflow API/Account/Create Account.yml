@@ -1,0 +1,26 @@
+info:
+  name: Create Account
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/api/accounts"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Axis Bank",
+        "type": "BANK",
+        "currentBalance": 35000.00,
+        "colorLabel": "#D81B60"
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

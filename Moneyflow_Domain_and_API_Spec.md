@@ -9,6 +9,7 @@
 |---|---|
 | 1.0.0 | Initial specification |
 | 1.1.0 | Removed income profiling wizard. Income tracked naturally via transactions. Simplified UserProfile to preferences only. Removed OtherIncome entity. |
+| 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
 
 ---
 
@@ -51,7 +52,7 @@ LLM integration provides analytics and insights on demand.
 Sequential 3-step wizard shown on dashboard after Sign Up, until all steps are complete:
 
 1. **Setup Accounts** → Add bank/savings accounts with opening balance
-2. **Add Planned Amounts** → Known recurring income/expenses
+2. **Add Planned Amounts** → Known recurring income/expenses (**Phase 2 — `onboardingChecklist.plannedAmountsAdded` is hardcoded `false` in MVP**)
 3. **Define Savings Goals** → Named goals with target, account, timeline
 
 The dashboard tracks completion and updates its message after each step is done.
@@ -560,7 +561,7 @@ com.moneyflow
 │   │   └── TransactionResponse.java
 │   └── Transaction.java              @Entity
 │
-├── planned/
+├── planned/                          ← PHASE 2 — NOT built in MVP
 │   ├── PlannedAmountController.java
 │   ├── PlannedAmountService.java     Due date calculations
 │   ├── PlannedAmountRepository.java
@@ -790,7 +791,7 @@ Three request shapes depending on the tab selected in the Add Entry form.
 }
 ```
 
-**Response 201:** Full transaction object with derived fields:
+**Response 201:** Full transaction object with derived fields. May include optional `warning` field (see BR-13):
 ```json
 {
   "data": {
@@ -803,16 +804,21 @@ Three request shapes depending on the tab selected in the Add Entry form.
     "displayAmount": "-₹919.19",
     "notes": "Vijetha",
     "financialYear": "FY24-25",
-    "month": 3
-  }
+    "month": 3,
+    "planned": false,
+    "plannedAmountId": null
+  },
+  "warning": "This transaction is dated before your account was set up (2026-08-08). Your opening balance reflects your balance as of setup date — consider updating it if needed."
 }
 ```
 
+`warning` is absent (`@JsonInclude NON_NULL`) on normal transactions. Only appears when BR-13 condition is met. Frontend shows it as a toast notification — once per account per session, not on every backdated transaction.
+
 **Side effects on every POST:**
 1. Update `account.currentBalance` (debit source, credit destination for transfers)
-2. Update `goal.currentProgress` if `toGoalId` set
-3. Set `month_summaries.is_dirty = true` for the affected month
-4. Auto-advance `planned_amounts.next_due_date` if `is_planned = true`
+2. Update `goal.currentProgress` if `toGoalId` set (BR-07)
+3. Set `month_summaries.is_dirty = true` for the affected month (BR-06)
+4. Auto-advance `planned_amounts.next_due_date` if `is_planned = true` (Phase 2)
 
 ---
 
@@ -1023,11 +1029,29 @@ Single endpoint — assembles everything the Home screen needs in one call.
 #### GET /analytics/cashflow-summary
 Powers the 4 summary cards on the Cash Flow screen.
 
-**Query params:**
-- `from=2026-07-01&to=2026-07-31` — explicit date range (primary mode)
-- `period=THIS_MONTH` · `period=LAST_MONTH` · `period=THIS_WEEK` · `period=LAST_WEEK` — preset shortcuts resolved server-side to date ranges
+**Query params — three modes:**
 
-Default when no params: current calendar month.
+**Mode 1 — Monthly navigation (default):**
+```
+?mode=MONTHLY&anchor=2026-07-15
+```
+Resolves to the 1st–last day of the month containing `anchor`. Default when no params: current calendar month.
+
+**Mode 2 — Weekly navigation:**
+```
+?mode=WEEKLY&anchor=2026-07-28
+```
+Resolves to Monday–Sunday of the week containing `anchor`.
+
+**Mode 3 — Custom date range:**
+```
+?mode=CUSTOM&from=2026-06-01&to=2026-08-31
+```
+Uses dates directly. Maximum range: 1 year (enforced on frontend).
+
+**Why anchor not preset strings:** The frontend owns navigation state (current anchor date). It increments/decrements the anchor by 7 days (weekly) or 1 month (monthly) when user taps arrows. The backend is stateless — it just computes the range from the anchor. No magic strings like `THIS_MONTH` / `LAST_MONTH`.
+
+**The response includes the resolved period** so Angular can display "July 2026" or "27 Jul – 2 Aug" without computing it client-side:
 
 **The four cards and what drives them:**
 
@@ -1038,20 +1062,21 @@ Default when no params: current calendar month.
 | Savings | SUM of `TRANSFER` to goal in period + savings rate % | > 20% green · 10-20% yellow · < 10% red |
 | Debt Ratio | SUM of `REPAYMENT` / SUM of `INCOME` × 100 | < 30% green · 30-50% yellow · > 50% red |
 
-**Savings rate** is displayed inside the Savings card — not a separate card. Color coding applies to the percentage badge on the card.
+**Savings rate** displayed inside the Savings card — not a separate card.
 
-**Debt Ratio** covers all repayments — EMIs to banks and repayments to individuals alike. The source of the debt does not change its nature as a financial obligation.
+**Debt Ratio** covers all repayments — EMIs to banks and repayments to individuals alike.
 
 **Special cases:**
-- `INCOME = 0` for the period → savings rate and debt ratio show `null` (not 0%) — avoids misleading percentage on an incomplete or income-free period.
-- `REPAYMENT = 0` → debt ratio shows `0%` (green) — no obligations this period.
+- `INCOME = 0` → savings rate and debt ratio show `null` (not 0%)
+- `REPAYMENT = 0` → debt ratio shows `0.0` (green)
 
 ```json
 {
   "data": {
     "period": {
       "from": "2026-07-01",
-      "to": "2026-07-31"
+      "to": "2026-07-31",
+      "mode": "MONTHLY"
     },
     "income": 50000.00,
     "expense": 15919.19,
@@ -1065,9 +1090,10 @@ Default when no params: current calendar month.
 ---
 
 #### GET /analytics/monthly/{financialYear}/{month}
-Full monthly breakdown for a specific FY month. Phase 2 — deferred until `MonthSummary` computation is built.
+Full monthly breakdown. **Phase 2** — deferred until `MonthSummary` computation is built.
 
----
+#### GET /analytics/yearly/{financialYear}
+Full FY rollup. **Phase 2** — deferred. Year view in the Cash Flow screen is also Phase 2.
 
 ### Categories
 
@@ -1247,7 +1273,7 @@ When a PlannedAmount's `nextDueDate` passes, or when a transaction is logged wit
 
 ### BR-09: Onboarding Step Progression
 - Step 0 → 1: when first account is created
-- Step 1 → 2: when first planned amount is created
+- Step 1 → 2: when first planned amount is created (**Phase 2 — `plannedAmountsAdded` is hardcoded `false` in MVP**)
 - Step 2 → 3: when first goal is created
 - Steps only advance, never go backward
 - Dashboard `onboardingChecklist` always reflects real data counts, not just the step number
@@ -1256,7 +1282,24 @@ When a PlannedAmount's `nextDueDate` passes, or when a transaction is logged wit
 Accounts, goals, and planned amounts use soft delete (`is_active = false`). Transactions are never soft-deleted — deletion reverses side effects and removes the record. Categories marked `is_system = true` cannot be deleted at all.
 
 ### BR-11: Transaction Notes Immutability
-`Transaction.notes` is set once at creation and is never updatable thereafter — not via `PUT /transactions/{id}`, not via any other endpoint. Matches standard bank reconciliation practice: corrections append a new record describing the change; they never rewrite the description of what already happened. Applies to all transactions, not just `SETTLEMENT` ones.
+`Transaction.notes` is set once at creation and is never updatable thereafter — not via `PUT /transactions/{id}`, not via any other endpoint. Applies to SETTLEMENT auto-transactions specifically (system-generated notes must never be altered). User-created transactions allow notes updates for non-SETTLEMENT types via the service layer check. Matches standard bank reconciliation practice.
+
+### BR-12: Goal-Linked Accounts Are Protected From Direct Expense Transactions
+An account linked to at least one active, non-completed goal (`isActive = true`, `status != 'COMPLETED'`) is a **protected account**. The following transaction types are blocked when `accountId` resolves to a protected account:
+
+```
+BLOCKED:  FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING, BORROWING, REPAYMENT
+ALLOWED:  INCOME, TRANSFER, SETTLEMENT
+```
+
+**Implementation:** `TransactionService.createTransaction` checks via `GoalRepository.existsByAccountIdAndActiveTrueAndStatusNot(accountId, "COMPLETED")`.
+
+### BR-13: Transaction Backdating Warning
+When a transaction's `date` is more than 7 days before the `account.createdAt` date (the account setup date), the API returns an optional `warning` field alongside the normal success response. The transaction is NOT blocked — the user may legitimately be reconstructing history from a bank statement. The warning informs them that their opening balance may need updating to reflect the historical transaction.
+
+**Why 7 days:** Minor date differences (timezone, bank processing delay) should not trigger warnings. Significant backdating (more than a week before setup) is the meaningful case.
+
+**Frontend responsibility:** Show the warning as a toast notification once per account per session. Suppress subsequent warnings for the same account to avoid repetitive friction during bulk historical entry.
 
 ### BR-12: Goal-Linked Accounts Are Protected From Direct Expense Transactions
 An account linked to at least one active, non-completed goal (`isActive = true`, `status != 'COMPLETED'`) is a **protected account**. The following transaction types are blocked when `accountId` resolves to a protected account:
@@ -1290,17 +1333,17 @@ ALLOWED:  INCOME, TRANSFER, SETTLEMENT
 | Get Started — step 2 (p7) | `GET /planned-amounts` |
 | Get Started — step 3 (p8) | `GET /goals` |
 | Dashboard — all states (p9–11) | `GET /dashboard` |
-| Planned Amounts — empty (p21) | `GET /planned-amounts` |
-| Add Planned Amount (p22–23) | `GET /categories`, `POST /planned-amounts` |
-| Planned Amounts — list (p24–25) | `GET /planned-amounts` |
+| Planned Amounts — empty (p21) | `GET /planned-amounts` ← **Phase 2** |
+| Add Planned Amount (p22–23) | `GET /categories`, `POST /planned-amounts` ← **Phase 2** |
+| Planned Amounts — list (p24–25) | `GET /planned-amounts` ← **Phase 2** |
 | Goals — empty (p26) | `GET /goals` |
 | Add Goal (p27) | `GET /accounts`, `POST /goals` |
 | Goals — in progress (p28–29) | `GET /goals` |
-| Cash Flow — empty (p30) | `GET /api/analytics/cashflow-summary`, `GET /transactions` |
+| Cash Flow — empty (p30) | `GET /api/analytics/cashflow-summary?mode=MONTHLY`, `GET /transactions` |
 | Add Entry — expense (p31) | `GET /categories`, `GET /accounts`, `POST /transactions` |
 | Add Entry — income (p32) | `GET /categories`, `GET /accounts`, `POST /transactions` |
 | Add Entry — transfer (p33) | `GET /accounts`, `GET /goals`, `POST /transactions` |
-| Cash Flow — with data (p34–36) | `GET /api/analytics/cashflow-summary?from=&to=`, `GET /transactions?from=&to=` |
+| Cash Flow — with data (p34–36) | `GET /api/analytics/cashflow-summary?mode=MONTHLY&anchor=`, `GET /transactions?mode=MONTHLY&anchor=` |
 | Accounts — empty (p37) | `GET /accounts` |
 | Add Account (p38) | `POST /accounts` |
 | Accounts — list (p39) | `GET /accounts` |
@@ -1309,24 +1352,33 @@ ALLOWED:  INCOME, TRANSFER, SETTLEMENT
 
 ## 11. Deferred to Post-MVP
 
-These ideas came from the Excel sheet's richer original structure or from later discussion. They are consciously **not** part of the current build. Listed here so research already done isn't silently lost — revisit once the MVP (sign up → add account → log a transaction → see dashboard) is working end to end.
+These items are consciously not part of the current MVP build. Listed here so research already done isn't silently lost.
+
+**MVP is complete when:** sign up → add accounts → log transactions → track goals → see dashboard → see cashflow analytics works end to end on the frontend.
 
 | Deferred item | Source | Why deferred | Revisit when |
 |---|---|---|---|
-| `CreditCard` entity — bank, card name, billing day, credit limit, carried/bill/carry-forward balance | Excel Accounts/Credit sheet | Structurally different from a simple balance-holding `Account` — has a billing cycle and rolling state across months. Excluded from `AccountType` enum entirely rather than half-modelled. | After `Account` + `Transaction` are working and a real credit card billing cycle use case is in front of us, not before. |
-| `CC_CREDIT` transaction type + `totalCreditBill` metric | TransactionType enum (orig. 9 values), MonthSummary | A `CC_CREDIT` transaction has nothing to attach to without a `CreditCard` entity — same dependency as the row above. Credit card spend in the MVP is logged as a normal expense against whichever account pays the bill; `REPAYMENT` already covers paying off a card. | Together with `CreditCard` entity, not separately. |
-| `Account.type` Savings/Current sub-classification | Original Excel data, early spec draft | App logic never behaves differently for Savings vs. Current — both just hold a balance. Forcing it into an enforced enum added a classification axis the system doesn't act on. Currently expressed informally via the account `name`. | If a feature ever needs to *behave* differently per sub-type (e.g. interest calculation), promote it back to a real field then — not before. |
-| Multi-currency support beyond INR | Domain overview ("Currency: INR") | `Account.currency` field already exists and defaults to `INR`, but no conversion logic, no multi-currency dashboard rollup. | If/when a non-INR user base becomes real, not speculative. |
-| Goal `status` automatic transitions (`UPCOMING` → `IN_PROGRESS` → `COMPLETED`) | Goal entity definition | Status exists as a field; the *logic* that transitions it automatically based on `startDate`/`currentProgress` isn't built yet — currently set manually at creation. | When building the Goal module itself. |
+| `PlannedAmount` module — entire entity, migration, API | Figma p21-25, spec §3.7 | Automation feature — enhances UX but not on the critical path for core cashflow tracking. `onboardingChecklist.plannedAmountsAdded` hardcoded `false` in Dashboard. | Phase 2, after MVP frontend is shipped. |
+| Analytics — monthly breakdown `GET /analytics/monthly/{fy}/{month}` | §6 Analytics | Requires `MonthSummary` computation and caching layer to be meaningful. | Phase 2, together with MonthSummary. |
+| Analytics — yearly view `GET /analytics/yearly/{fy}` | Cash Flow screen navigation | Year view is a Phase 2 navigation mode. Weekly and Monthly are MVP. | Phase 2, after monthly is working in frontend. |
+| `MonthSummary` computation and caching | §3.10 entity exists in spec | `month_summaries` table DDL exists but no computation logic built. `is_dirty` flag mechanism designed but not implemented. | Phase 2, when historical analytics beyond the current period are needed. |
+| LLM Insights `POST /insights/generate` | §6 LLM Insights | Requires local Ollama in Docker. Infrastructure not yet set up. Entire `llm/` module not built. | Phase 2, after Docker + Ollama are configured. |
+| `CreditCard` entity — bank, card name, billing day, credit limit, carried/bill/carry-forward balance | Excel Accounts/Credit sheet | Structurally different from a simple balance-holding `Account` — has a billing cycle and rolling state across months. | After `Account` + `Transaction` MVP are working. |
+| `CC_CREDIT` transaction type + `totalCreditBill` metric | TransactionType enum | No `CreditCard` entity to attach to. Credit card spend logged as normal expense; `REPAYMENT` covers paying off a card. | Together with `CreditCard` entity. |
+| `Account.type` Savings/Current sub-classification | Original Excel data | App logic never behaves differently for Savings vs. Current — expressed informally via account `name`. | If a feature ever needs to behave differently per sub-type. |
+| Multi-currency support beyond INR | Domain overview | `Account.currency` field exists, defaults to `INR`, no conversion logic. | If/when non-INR user base becomes real. |
+| Goal `status` automatic transitions | Goal entity | Status field exists; transitions not automated — set manually. | Phase 2 Goal enhancements. |
+| FD/RD (Fixed Deposits / Recurring Deposits) as account types | User discussion | Different financial instrument — lock-in, maturity, interest. Doesn't fit `Account` model. | Separate `Investment` module, post-MVP. |
+| `BalanceAfter` snapshot per transaction | Analytics discussion | Considered and deliberately rejected in favour of `currentBalance - sumNetAfterDate` approach for period-end balance queries. No new column needed. | If performance profiling shows the aggregation approach is insufficient at scale. |
 
 ---
 
-*Moneyflow Domain Model & API Contract — v1.1.0*
-*Income profiling wizard removed. Income flows naturally as transactions.*
-*Account type revised: CASH/BANK/WALLET replaces CASH/SAVINGS/CURRENT/WALLET — see §3.3 and §11.*
-*TransactionType narrowed to 8 active values; CC_CREDIT deferred alongside CreditCard entity — see §3.4 and §11.*
-*SETTLEMENT formalised as two system-generated scenarios (BR-01, BR-02); Transaction.notes immutability codified (BR-11) — validated against real bank reconciliation "Adjustment Method" practice.*
-*Two-calendar model documented (§3.6): financialYear/month for FY-based analytics, calendarMonth/calendarYear for UI navigation — both stored for indexed query performance.*
+*Moneyflow Domain Model & API Contract — v1.2.0*
+*Backend MVP complete: auth, accounts, transactions, goals, dashboard, analytics.*
+*PlannedAmount module, LLM insights, MonthSummary computation, yearly analytics — all Phase 2.*
+*Analytics query model: mode/anchor (MONTHLY/WEEKLY) + CUSTOM from/to date range.*
+*BR-13 added: transaction backdating warning (7-day threshold, non-blocking, frontend surfaces once per session).*
+*Next: Ionic frontend migration — Strapi → MoneyFlow Spring Boot API.*
 *Transaction date vs. entry date distinction documented (§3.6): date = when money moved, createdAt = when logged. No speculative computed fields added (loggedLate removed — no screen consumer, not built speculatively).*
 *BR-03 extended to cover TRANSFER edit/delete atomicity, not just creation.*
 *BR-05 extended with implementation-order constraint for PUT: load old value before overwriting.*

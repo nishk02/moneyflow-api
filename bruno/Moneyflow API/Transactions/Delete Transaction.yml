@@ -1,0 +1,17 @@
+info:
+  name: Delete Transaction
+  type: http
+  seq: 4
+
+http:
+  method: DELETE
+  url: "{{BASE_URL}}/api/transactions/57c4941c-103b-41af-8ae9-04511b42df59"
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
