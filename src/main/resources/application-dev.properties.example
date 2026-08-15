@@ -1,0 +1,13 @@
+# Copy this file to application-dev.properties and fill in your values
+# application-dev.properties is gitignored — never commit it
+
+spring.profiles.active=dev
+
+# ─── CORS ──────────────────────────────────────────────
+# Add your local network IP for device testing
+# Find your IP: ipconfig getifaddr en0
+cors.allowed-origins=capacitor://localhost,ionic://localhost,http://localhost:8100,http://localhost:4200,http://YOUR_LOCAL_IP:8100
+
+# ─── JWT ───────────────────────────────────────────────
+jwt.secret=${JWT_SECRET:moneyflow-local-dev-secret-key-2026-not-for-prod}
+jwt.expiration-ms=86400000
