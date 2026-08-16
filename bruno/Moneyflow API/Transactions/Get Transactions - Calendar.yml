@@ -1,17 +1,17 @@
 info:
-  name: Cashflow Summary - WEEKLY
+  name: Get Transactions - Calendar
   type: http
-  seq: 2
+  seq: 3
 
 http:
   method: GET
-  url: "{{BASE_URL}}/api/analytics/cashflow-summary?mode=WEEKLY&anchor=2026-07-01"
+  url: "{{BASE_URL}}/api/transactions?calendarYear=2026&calendarMonth=08"
   params:
-    - name: mode
-      value: WEEKLY
+    - name: calendarYear
+      value: "2026"
       type: query
-    - name: anchor
-      value: 2026-07-01
+    - name: calendarMonth
+      value: "08"
       type: query
   auth:
     type: bearer
