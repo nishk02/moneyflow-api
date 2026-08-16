@@ -5,13 +5,23 @@ info:
 
 http:
   method: GET
-  url: "{{BASE_URL}}/api/transactions?calendarYear=2026&calendarMonth=08"
+  url: "{{BASE_URL}}/api/transactions?calendarYear=2026&calendarMonth=08&page=0&direction=DESC"
   params:
     - name: calendarYear
       value: "2026"
       type: query
     - name: calendarMonth
       value: "08"
+      type: query
+    - name: page
+      value: "0"
+      type: query
+    - name: sort
+      value: date
+      type: query
+      disabled: true
+    - name: direction
+      value: DESC
       type: query
   auth:
     type: bearer
