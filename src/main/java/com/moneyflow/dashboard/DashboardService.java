@@ -90,9 +90,8 @@ public class DashboardService {
 
         // Last entries
         List<TransactionResponse> lastEntries = transactionRepository
-                .findByUserIdOrderByDateDescCreatedAtDesc(userId)
+                .findTop5ByUserIdOrderByDateDescCreatedAtDesc(userId)
                 .stream()
-                .limit(5)
                 .map(TransactionResponse::from)
                 .toList();
 

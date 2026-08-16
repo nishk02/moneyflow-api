@@ -1,9 +1,13 @@
 package com.moneyflow.transaction;
 
 import com.moneyflow.shared.dto.ApiResponse;
+import com.moneyflow.shared.dto.PageResponse;
 import com.moneyflow.shared.security.BaseController;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,16 +19,17 @@ public class TransactionController extends BaseController {
     private final TransactionService transactionService;
 
     @GetMapping
-    public ResponseEntity<ApiResponse<java.util.List<TransactionResponse>>> getTransactions(
+    public ResponseEntity<ApiResponse<PageResponse<TransactionResponse>>> getTransactions(
             @RequestParam(required = false) Integer calendarYear,
             @RequestParam(required = false) Integer calendarMonth,
             @RequestParam(required = false) String financialYear,
-            @RequestParam(required = false) String financialMonth) {
+            @RequestParam(required = false) String financialMonth,
+            @PageableDefault(size = 100, sort = "date", direction = Sort.Direction.DESC) Pageable pageable) {
         String userId = getCurrentUserId();
         return ResponseEntity.ok(ApiResponse.success(
-                transactionService.getTransactions(
-                        userId, calendarYear, calendarMonth,
-                        financialYear, financialMonth)));
+                PageResponse.from(
+                        transactionService.getTransactions(
+                                userId, calendarYear, calendarMonth, financialYear, financialMonth, pageable))));
     }
 
     @PostMapping

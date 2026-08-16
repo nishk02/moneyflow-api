@@ -11,6 +11,8 @@ import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,23 +30,23 @@ public class TransactionService {
     private final GoalRepository goalRepository;
 
     @Transactional(readOnly = true)
-    public List<TransactionResponse> getTransactions(
+    public Page<TransactionResponse> getTransactions(
             String userId, Integer calendarYear, Integer calendarMonth,
-            String financialYear, String financialMonth) {
-        List<Transaction> transactions;
+            String financialYear, String financialMonth, Pageable pageable) {
+        Page<Transaction> transactions;
 
         if (calendarYear != null && calendarMonth != null) {
             transactions = transactionRepository
                     .findByUserIdAndCalendarYearAndCalendarMonthOrderByDateDescCreatedAtDesc(
-                            userId, calendarYear, calendarMonth);
+                            userId, calendarYear, calendarMonth, pageable);
         } else if (financialYear != null && financialMonth != null) {
             transactions = transactionRepository.findByUserIdAndFinancialYearAndMonthOrderByDateDescCreatedAtDesc(
-                    userId, financialYear, Integer.parseInt(financialMonth));
+                    userId, financialYear, Integer.parseInt(financialMonth), pageable);
         } else {
-            transactions = transactionRepository.findByUserIdOrderByDateDescCreatedAtDesc(userId);
+            transactions = transactionRepository.findByUserIdOrderByDateDescCreatedAtDesc(userId, pageable);
         }
 
-        return transactions.stream().map(TransactionResponse::from).toList();
+        return transactions.map(TransactionResponse::from);
     }
 
     @Transactional(readOnly = true)

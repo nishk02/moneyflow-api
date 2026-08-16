@@ -1,5 +1,7 @@
 package com.moneyflow.transaction;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -12,18 +14,20 @@ import java.util.Optional;
 
 @Repository
 public interface TransactionRepository extends JpaRepository<Transaction, String> {
-    List<Transaction> findByUserIdOrderByDateDescCreatedAtDesc(String userId);
+    Page<Transaction> findByUserIdOrderByDateDescCreatedAtDesc(String userId, Pageable pageable);
 
-    List<Transaction> findByUserIdAndCalendarYearAndCalendarMonthOrderByDateDescCreatedAtDesc(
-            String userId, int calendarYear, int calendarMonth);
+    Page<Transaction> findByUserIdAndCalendarYearAndCalendarMonthOrderByDateDescCreatedAtDesc(
+            String userId, int calendarYear, int calendarMonth, Pageable pageable);
 
-    List<Transaction> findByUserIdAndFinancialYearAndMonthOrderByDateDescCreatedAtDesc(
-            String userId, String financialYear, int month);
+    Page<Transaction> findByUserIdAndFinancialYearAndMonthOrderByDateDescCreatedAtDesc(
+            String userId, String financialYear, int month, Pageable pageable);
 
     Optional<Transaction> findByIdAndUserId(String id, String userId);
 
     List<Transaction> findByUserIdAndAccountIdOrderByDateDescCreatedAtDesc(
             String userId, String accountId);
+
+    List<Transaction> findTop5ByUserIdOrderByDateDescCreatedAtDesc(String userId);
 
     @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
             "WHERE t.user.id = :userId " +
