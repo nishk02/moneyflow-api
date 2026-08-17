@@ -145,15 +145,15 @@ public class TransactionService {
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
 
         Account account = transaction.getAccount();
+        Account toAccount = transaction.getToAccount();
 
-        reverseBalanceEffect(transaction, account);
-        accountRepository.save(account);
+        reverseBalanceEffect(transaction, account, toAccount);
+        reverseGoalProgress(transaction, userId);
 
         if (request.amount() != null) transaction.setAmount(request.amount());
         if (request.date() != null) {
             transaction.setDate(request.date());
-            FinancialYearUtil.applyDerivedDateFields(transaction,
-                    request.date());
+            FinancialYearUtil.applyDerivedDateFields(transaction, request.date());
         }
         if (request.categoryId() != null) {
             Category category = categoryRepository.findById(request.categoryId())
@@ -165,8 +165,11 @@ public class TransactionService {
             transaction.setNotes(request.notes());
         }
 
-        applyBalanceEffect(transaction, account, null, transaction.getAmount());
+        applyBalanceEffect(transaction, account, toAccount, transaction.getAmount());
+        applyGoalProgress(transaction, userId);
+
         accountRepository.save(account);
+        if (toAccount != null) accountRepository.save(toAccount);
 
         Transaction saved = transactionRepository.save(transaction);
         return TransactionResponse.from(saved);
@@ -179,22 +182,14 @@ public class TransactionService {
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
 
         Account account = transaction.getAccount();
-        reverseBalanceEffect(transaction, account);
+        Account toAccount = transaction.getToAccount();
 
+        reverseBalanceEffect(transaction, account, toAccount);
         // BR-07: reverse goal progress on delete
-        if (transaction.getType() == TransactionType.TRANSFER
-                && transaction.getToGoalId() != null) {
-            goalRepository.findByIdAndUserId(
-                            transaction.getToGoalId(), userId)
-                    .ifPresent(goal -> {
-                        goal.setCurrentProgress(
-                                goal.getCurrentProgress()
-                                        .subtract(transaction.getAmount()));
-                        goalRepository.save(goal);
-                    });
-        }
+        reverseGoalProgress(transaction, userId);
 
         accountRepository.save(account);
+        if (toAccount != null) accountRepository.save(toAccount);
 
         transactionRepository.delete(transaction);
     }
@@ -330,15 +325,39 @@ public class TransactionService {
         }
     }
 
-    private void reverseBalanceEffect(Transaction transaction, Account account) {
+    private void reverseBalanceEffect(Transaction transaction, Account account, Account toAccount) {
         switch (transaction.getType()) {
             case INCOME, SETTLEMENT -> account.setCurrentBalance(
                     account.getCurrentBalance().subtract(transaction.getAmount()));
             case FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING,
                  BORROWING, REPAYMENT -> account.setCurrentBalance(
                     account.getCurrentBalance().add(transaction.getAmount()));
-            case TRANSFER -> account.setCurrentBalance(
-                    account.getCurrentBalance().add(transaction.getAmount()));
+            case TRANSFER -> {
+                account.setCurrentBalance(account.getCurrentBalance().add(transaction.getAmount()));
+                if (toAccount != null) {
+                    toAccount.setCurrentBalance(toAccount.getCurrentBalance().subtract(transaction.getAmount()));
+                }
+            }
+        }
+    }
+
+    private void reverseGoalProgress(Transaction transaction, String userId) {
+        if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
+            goalRepository.findByIdAndUserId(transaction.getToGoalId(), userId)
+                    .ifPresent(goal -> {
+                        goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
+                        goalRepository.save(goal);
+                    });
+        }
+    }
+
+    private void applyGoalProgress(Transaction transaction, String userId) {
+        if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
+            goalRepository.findByIdAndUserId(transaction.getToGoalId(), userId)
+                    .ifPresent(goal -> {
+                        goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
+                        goalRepository.save(goal);
+                    });
         }
     }
 
