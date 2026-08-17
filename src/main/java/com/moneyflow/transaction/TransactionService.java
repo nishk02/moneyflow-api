@@ -8,6 +8,7 @@ import com.moneyflow.category.Category;
 import com.moneyflow.category.CategoryRepository;
 import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
+import com.moneyflow.shared.dto.PageResponse;
 import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
@@ -18,7 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.List;
+import java.time.YearMonth;
 
 @Service
 @RequiredArgsConstructor
@@ -30,23 +31,50 @@ public class TransactionService {
     private final GoalRepository goalRepository;
 
     @Transactional(readOnly = true)
-    public Page<TransactionResponse> getTransactions(
+    public TransactionListResponse getTransactions(
             String userId, Integer calendarYear, Integer calendarMonth,
             String financialYear, String financialMonth, Pageable pageable) {
-        Page<Transaction> transactions;
 
         if (calendarYear != null && calendarMonth != null) {
-            transactions = transactionRepository
+            Page<TransactionResponse> page = transactionRepository
                     .findByUserIdAndCalendarYearAndCalendarMonthOrderByDateDescCreatedAtDesc(
-                            userId, calendarYear, calendarMonth, pageable);
-        } else if (financialYear != null && financialMonth != null) {
-            transactions = transactionRepository.findByUserIdAndFinancialYearAndMonthOrderByDateDescCreatedAtDesc(
-                    userId, financialYear, Integer.parseInt(financialMonth), pageable);
-        } else {
-            transactions = transactionRepository.findByUserIdOrderByDateDescCreatedAtDesc(userId, pageable);
+                            userId, calendarYear, calendarMonth, pageable).map(TransactionResponse::from);
+
+            YearMonth current = YearMonth.of(calendarYear, calendarMonth);
+            YearMonth previous = current.minusMonths(1);
+            YearMonth next = current.plusMonths(1);
+
+            boolean hasPrevious = transactionRepository.existsByUserIdAndCalendarYearAndCalendarMonth(
+                    userId, previous.getYear(), previous.getMonthValue());
+            boolean hasNext = transactionRepository.existsByUserIdAndCalendarYearAndCalendarMonth(
+                    userId, next.getYear(), next.getMonthValue());
+
+            return TransactionListResponse.of(PageResponse.from(page), hasPrevious, hasNext);
         }
 
-        return transactions.map(TransactionResponse::from);
+        if (financialYear != null && financialMonth != null) {
+            int month = Integer.parseInt(financialMonth);
+            Page<TransactionResponse> page = transactionRepository
+                    .findByUserIdAndFinancialYearAndMonthOrderByDateDescCreatedAtDesc(
+                            userId, financialYear, month, pageable)
+                    .map(TransactionResponse::from);
+
+            FinancialYearUtil.FinancialMonth previous = FinancialYearUtil.previous(financialYear, month);
+            FinancialYearUtil.FinancialMonth next = FinancialYearUtil.next(financialYear, month);
+
+            boolean hasPrevious = transactionRepository.existsByUserIdAndFinancialYearAndMonth(
+                    userId, previous.financialYear(), previous.month());
+            boolean hasNext = transactionRepository.existsByUserIdAndFinancialYearAndMonth(
+                    userId, next.financialYear(), next.month());
+
+            return TransactionListResponse.of(PageResponse.from(page), hasPrevious, hasNext);
+        }
+
+        Page<TransactionResponse> page = transactionRepository
+                .findByUserIdOrderByDateDescCreatedAtDesc(userId, pageable)
+                .map(TransactionResponse::from);
+
+        return TransactionListResponse.of(PageResponse.from(page));
     }
 
     @Transactional(readOnly = true)

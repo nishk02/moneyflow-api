@@ -29,6 +29,12 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
 
     List<Transaction> findTop5ByUserIdOrderByDateDescCreatedAtDesc(String userId);
 
+    boolean existsByUserIdAndCalendarYearAndCalendarMonth(
+            String userId, int calendarYear, int calendarMonth);
+
+    boolean existsByUserIdAndFinancialYearAndMonth(
+            String userId, String financialYear, int month);
+
     @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
             "WHERE t.user.id = :userId " +
             "AND t.type IN :types " +

@@ -1,7 +1,6 @@
 package com.moneyflow.transaction;
 
 import com.moneyflow.shared.dto.ApiResponse;
-import com.moneyflow.shared.dto.PageResponse;
 import com.moneyflow.shared.security.BaseController;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +18,7 @@ public class TransactionController extends BaseController {
     private final TransactionService transactionService;
 
     @GetMapping
-    public ResponseEntity<ApiResponse<PageResponse<TransactionResponse>>> getTransactions(
+    public ResponseEntity<ApiResponse<TransactionListResponse>> getTransactions(
             @RequestParam(required = false) Integer calendarYear,
             @RequestParam(required = false) Integer calendarMonth,
             @RequestParam(required = false) String financialYear,
@@ -27,9 +26,8 @@ public class TransactionController extends BaseController {
             @PageableDefault(size = 100, sort = "date", direction = Sort.Direction.DESC) Pageable pageable) {
         String userId = getCurrentUserId();
         return ResponseEntity.ok(ApiResponse.success(
-                PageResponse.from(
-                        transactionService.getTransactions(
-                                userId, calendarYear, calendarMonth, financialYear, financialMonth, pageable))));
+                transactionService.getTransactions(
+                        userId, calendarYear, calendarMonth, financialYear, financialMonth, pageable)));
     }
 
     @PostMapping

@@ -31,5 +31,6 @@ CREATE TABLE transactions
 );
 
 CREATE INDEX idx_transactions_user_date ON transactions (user_id, date DESC);
+CREATE INDEX idx_transactions_user_calendar ON transactions (user_id, calendar_year, calendar_month);
 CREATE INDEX idx_transactions_user_fy_month ON transactions (user_id, financial_year, month);
 CREATE INDEX idx_transactions_account ON transactions (account_id);

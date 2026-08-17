@@ -5,6 +5,8 @@ import com.moneyflow.transaction.Transaction;
 import java.time.LocalDate;
 
 public class FinancialYearUtil {
+    public record FinancialMonth(String financialYear, int month) {}
+
     private FinancialYearUtil() {
         // Utility class - not instantiable
     }
@@ -28,5 +30,27 @@ public class FinancialYearUtil {
             transaction.setFinancialYear(String.format("FY%02d-%02d", fyStart, fyEnd));
             transaction.setMonth(calendarMonth + 9);
         }
+    }
+
+    public static FinancialMonth previous(String financialYear, int month) {
+        if (month > 1) {
+            return new FinancialMonth(financialYear, month - 1);
+        }
+        return new FinancialMonth(shiftFinancialYear(financialYear, -1), 12);
+    }
+
+    public static FinancialMonth next(String financialYear, int month) {
+        if (month < 12) {
+            return new FinancialMonth(financialYear, month + 1);
+        }
+        return new FinancialMonth(shiftFinancialYear(financialYear, 1), 1);
+    }
+
+    private static String shiftFinancialYear(String financialYear, int delta) {
+        int start = Integer.parseInt(financialYear.substring(2, 4));
+        int end = Integer.parseInt(financialYear.substring(5, 7));
+        return String.format("FY%02d-%02d",
+                Math.floorMod(start + delta, 100),
+                Math.floorMod(end + delta, 100));
     }
 }
