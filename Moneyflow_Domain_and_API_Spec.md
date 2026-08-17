@@ -1,5 +1,5 @@
 # Moneyflow — Domain Model & API Contract Specification
-**Version:** 1.1.0  
+**Version:** 1.3.0  
 **Derived from:** Figma screens (39 pages), Excel cashflow template (FY24-25), User journey map  
 **Purpose:** Complete build specification before writing any Java code  
 **Architecture:** Modular monolith · Spring Boot 3 · SQLite · Financial year April–March
@@ -10,6 +10,7 @@
 | 1.0.0 | Initial specification |
 | 1.1.0 | Removed income profiling wizard. Income tracked naturally via transactions. Simplified UserProfile to preferences only. Removed OtherIncome entity. |
 | 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
+| 1.3.0 | `GET /transactions` documented as paginated (default `size=100`, `page`/`size`/`sort` query params) with month-navigation hints (`hasPreviousMonthData`/`hasNextMonthData`) for calendar- and financial-year-filtered requests. `PUT /transactions/{id}` scope clarified: corrects `amount`, `category`, `date`, and `notes` (non-SETTLEMENT transactions only) — never `type`, `accountId`, `toAccountId`, or `toGoalId`. BR-03/BR-05 TRANSFER reversal fixed to be symmetric across source and destination account on both PUT and DELETE (previously only the source account was reversed, silently duplicating balance on the destination side). BR-07 goal-progress reversal wired into `PUT /transactions/{id}` amount corrections (previously only applied on POST and DELETE). |
 
 ---
 
@@ -140,7 +141,7 @@ TRANSFER           → Moving money between own accounts or to a goal
 
 **Note on INCOME:** This single type covers all income sources. Whether salary, freelance, business, or rental — it is all `INCOME`. The `notes` field and `category` provide context. No classification wizard needed.
 
-**Note on SETTLEMENT — design rationale:** `SETTLEMENT` is never created directly by a user filling out the Add Entry form. It is always system-generated, in exactly two scenarios, both covered in §9 (BR-01, BR-02). This mirrors the **Adjustment Method** used by real banks for correcting reconciliation errors: the original record is never edited; a new entry is appended that bridges the gap to the correct balance, with the discrepancy and resolution captured in that new entry's description — never silently merged into prior history. This is why `Transaction.notes` is immutable once created (see §9, BR-11): financial records are append-only, not mutated, matching standard banking reconciliation practice.
+**Note on SETTLEMENT — design rationale:** `SETTLEMENT` is never created directly by a user filling out the Add Entry form. It is always system-generated, in exactly two scenarios, both covered in §9 (BR-01, BR-02). This mirrors the **Adjustment Method** used by real banks for correcting reconciliation errors: the original record is never edited; a new entry is appended that bridges the gap to the correct balance, with the discrepancy and resolution captured in that new entry's description — never silently merged into prior history. This is why `Transaction.notes` is immutable once created for `SETTLEMENT` rows specifically (see §9, BR-11): system-generated financial records are append-only, not mutated, matching standard banking reconciliation practice.
 
 ---
 
@@ -174,7 +175,7 @@ Derived from: Cash Flow screens (pages 30–36), Excel monthly sheets
 | `toAccountId` | UUID | FK to Account — nullable, used for TRANSFER between accounts |
 | `toGoalId` | UUID | FK to Goal — nullable, used for TRANSFER to a goal |
 | `amount` | BigDecimal | Always stored as positive. Sign derived from type at read time. |
-| `notes` | String | Description, set once at creation. Never editable — see BR-11. |
+| `notes` | String | Description, set at creation. Editable via `PUT` for all types except `SETTLEMENT` — see BR-11. |
 | `financialYear` | String | e.g. `FY24-25` — derived server-side from `date`, not user input. See "Two calendars" below. |
 | `month` | Integer | 1–12, where 1=April, 12=March — derived server-side. See "Two calendars" below. |
 | `calendarMonth` | Integer | Standard calendar month 1–12, derived server-side from `date` |
@@ -188,7 +189,7 @@ Derived from: Cash Flow screens (pages 30–36), Excel monthly sheets
 
 **Transfer rules:** Exactly one of `toAccountId` or `toGoalId` must be set when `type = TRANSFER`. Both null = validation error. Both set = validation error.
 
-**Immutability:** `notes` is set once at creation and never updated thereafter, including via `PUT /transactions/{id}` (that endpoint may correct `amount`, `category`, `date` — never `notes`). This is deliberate, matching real bank reconciliation practice: corrections append a new record rather than rewriting history. See BR-11.
+**Immutability:** `notes` is fixed at creation for `SETTLEMENT` transactions — system-generated notes must never be altered, matching real bank reconciliation practice. For every other type, `PUT /transactions/{id}` may also correct `notes`, alongside `amount`, `category`, and `date`. `type`, `accountId`, `toAccountId`, and `toGoalId` are never editable via `PUT` regardless of transaction type — changing what a transaction fundamentally is or where it moves money means deleting it and creating a new one, not rewriting it in place. See BR-11.
 
 **Two calendars — why `financialYear`/`month` AND `calendarMonth`/`calendarYear` both exist:**
 
@@ -505,6 +506,9 @@ CREATE TABLE month_summaries (
 CREATE INDEX idx_transactions_user_date
     ON transactions(user_id, date DESC);
 
+CREATE INDEX idx_transactions_user_calendar
+    ON transactions(user_id, calendar_year, calendar_month);
+
 CREATE INDEX idx_transactions_user_fy_month
     ON transactions(user_id, financial_year, month);
 
@@ -691,7 +695,7 @@ Side effect: creates `UserProfile` record with defaults
 { "email": "nishant@example.com", "password": "SecurePass123!" }
 ```
 **Response 200:** same shape as signup  
-**401:** `INVALID_CREDENTIALS`
+**401:** `INVALID_CREDENTIALS` — returned identically whether the email doesn't exist or the password is wrong. This is deliberate: a login endpoint that distinguishes "no such user" from "wrong password" via status code or message lets an anonymous caller enumerate registered emails. Both failure modes must be indistinguishable to the caller.
 
 ---
 
@@ -823,32 +827,41 @@ Three request shapes depending on the tab selected in the Add Entry form.
 ---
 
 #### GET /transactions
-Powers the Cash Flow list with date grouping.
+Powers the Cash Flow list with date grouping. Pageable — defaults to `size=100`, sorted `date,desc`, when the caller supplies neither.
 
 **Query params:**
 ```
-month=6&year=2024            filter by calendar month/year
-financialYear=FY24-25        filter by financial year
-type=INCOME                  filter by single type
-direction=EXPENSE            INCOME or EXPENSE (groups related types)
-accountId=uuid               filter by account
-page=0&size=20
-sort=date,desc
+calendarYear=2026&calendarMonth=8       filter by calendar month/year
+financialYear=FY26-27&financialMonth=5  filter by financial year/month (1=April..12=March)
+page=0&size=100                         0-indexed page, size defaults to 100
+sort=date,desc                          optional override of the default sort
 ```
+
+At most one of the two filter pairs may be supplied. Neither supplied means an unfiltered listing across all of the user's transactions — still paginated the same way.
 
 **Response 200:**
 ```json
 {
   "data": {
-    "transactions": [ ... ],
-    "pagination": { "page": 0, "size": 20, "total": 47 }
+    "transactions": {
+      "content": [ ... ],
+      "page": 0,
+      "size": 100,
+      "totalElements": 47,
+      "totalPages": 1,
+      "hasNext": false
+    },
+    "hasPreviousMonthData": false,
+    "hasNextMonthData": true
   }
 }
 ```
 
+`hasPreviousMonthData`/`hasNextMonthData` are present only when `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth` are supplied — they report whether the immediately adjacent month has any transactions at all, letting the frontend enable/disable the Cash Flow screen's `←`/`→` month-navigation arrows without an extra round trip per tap. Both fields are absent (not `false`) on the unfiltered listing — there is no "adjacent month" for an unfiltered view.
+
 #### GET /transactions/{id}
-#### PUT /transactions/{id} — recalculates balances if amount or account changed
-#### DELETE /transactions/{id} — reverses all balance and goal side effects
+#### PUT /transactions/{id} — corrects `amount`, `category`, `date`, and `notes` (all types except `SETTLEMENT`). Never changes `type`, `accountId`, `toAccountId`, or `toGoalId` — see §3.6 Immutability and BR-11. For a TRANSFER, reverses the old effect on both the source and destination account (and goal progress, if `toGoalId` is set) before reapplying with the new values — see BR-03, BR-05, BR-07.
+#### DELETE /transactions/{id} — reverses all balance and goal side effects, both source and destination account for TRANSFER — see BR-03.
 
 ---
 
@@ -1256,9 +1269,9 @@ Else:
 ### BR-05: Balance is the Source of Truth
 `account.currentBalance` is updated with every transaction POST, PUT, and DELETE. It is never recalculated from the full transaction history.
 
-**On PUT (amount correction):** load the old stored amount *before* overwriting the row — reverse the old amount's effect on `currentBalance`, then apply the new amount's effect. The old value must be captured before it's overwritten; this is an implementation-order constraint, not just a design one.
+**On PUT (amount correction):** load the old stored amount *before* overwriting the row — reverse the old amount's effect on `currentBalance`, then apply the new amount's effect. The old value must be captured before it's overwritten; this is an implementation-order constraint, not just a design one. For a TRANSFER, this reversal applies to both the source and destination account, not just the source — see BR-03.
 
-**On DELETE:** reverse the stored amount's exact effect. Never re-derive the amount from anywhere — use what was actually stored on that row.
+**On DELETE:** reverse the stored amount's exact effect. Never re-derive the amount from anywhere — use what was actually stored on that row. For a TRANSFER, this again means both the source and destination account, not just the source.
 
 ### BR-06: Month Summary Invalidation
 Any create, update, or delete on a transaction sets `month_summaries.is_dirty = true` for the affected month(s). Summaries are recomputed lazily on next `GET /analytics/**` call for that month, or eagerly via a background recalculation.
@@ -1266,7 +1279,7 @@ Any create, update, or delete on a transaction sets `month_summaries.is_dirty = 
 **Cross-month edge case:** if a `PUT /transactions/{id}` changes `date` such that the transaction moves from one month/FY to another — e.g. correcting a June entry to May — **both** months must be invalidated: the old month (a transaction left it, its totals decreased) and the new month (a transaction arrived, its totals increased). Setting `is_dirty = true` on only one of the two months silently leaves the other month's cached summary permanently wrong.
 
 ### BR-07: Goal Progress Source
-`goal.currentProgress` only increases via TRANSFER transactions with `toGoalId` set. No direct PUT endpoint for `currentProgress`. Deleting such a transaction decrements the goal progress. Editing the amount on such a transaction reverses the old contribution and applies the new one (same reversal pattern as BR-05, applied to `currentProgress` instead of `currentBalance`).
+`goal.currentProgress` only increases via TRANSFER transactions with `toGoalId` set. No direct PUT endpoint for `currentProgress`. Deleting such a transaction decrements the goal progress. Editing the amount on such a transaction reverses the old contribution and applies the new one (same reversal pattern as BR-05, applied to `currentProgress` instead of `currentBalance`) — implemented as part of `PUT /transactions/{id}`, not a separate goal-specific endpoint.
 
 ### BR-08: Planned Amount Advancement
 When a PlannedAmount's `nextDueDate` passes, or when a transaction is logged with `plannedAmountId` set, `nextDueDate` advances by the frequency interval. For `ONE_TIME` frequency, mark `isActive = false` after it triggers.
@@ -1282,24 +1295,7 @@ When a PlannedAmount's `nextDueDate` passes, or when a transaction is logged wit
 Accounts, goals, and planned amounts use soft delete (`is_active = false`). Transactions are never soft-deleted — deletion reverses side effects and removes the record. Categories marked `is_system = true` cannot be deleted at all.
 
 ### BR-11: Transaction Notes Immutability
-`Transaction.notes` is set once at creation and is never updatable thereafter — not via `PUT /transactions/{id}`, not via any other endpoint. Applies to SETTLEMENT auto-transactions specifically (system-generated notes must never be altered). User-created transactions allow notes updates for non-SETTLEMENT types via the service layer check. Matches standard bank reconciliation practice.
-
-### BR-12: Goal-Linked Accounts Are Protected From Direct Expense Transactions
-An account linked to at least one active, non-completed goal (`isActive = true`, `status != 'COMPLETED'`) is a **protected account**. The following transaction types are blocked when `accountId` resolves to a protected account:
-
-```
-BLOCKED:  FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING, BORROWING, REPAYMENT
-ALLOWED:  INCOME, TRANSFER, SETTLEMENT
-```
-
-**Implementation:** `TransactionService.createTransaction` checks via `GoalRepository.existsByAccountIdAndActiveTrueAndStatusNot(accountId, "COMPLETED")`.
-
-### BR-13: Transaction Backdating Warning
-When a transaction's `date` is more than 7 days before the `account.createdAt` date (the account setup date), the API returns an optional `warning` field alongside the normal success response. The transaction is NOT blocked — the user may legitimately be reconstructing history from a bank statement. The warning informs them that their opening balance may need updating to reflect the historical transaction.
-
-**Why 7 days:** Minor date differences (timezone, bank processing delay) should not trigger warnings. Significant backdating (more than a week before setup) is the meaningful case.
-
-**Frontend responsibility:** Show the warning as a toast notification once per account per session. Suppress subsequent warnings for the same account to avoid repetitive friction during bulk historical entry.
+`Transaction.notes` is fixed at creation and never updatable thereafter for `SETTLEMENT` transactions specifically — system-generated notes must never be altered, matching real bank reconciliation practice (see §3.4). For every other transaction type, `PUT /transactions/{id}` may update `notes` via the service layer, alongside `amount`, `category`, and `date`. `type`, `accountId`, `toAccountId`, and `toGoalId` remain non-editable via `PUT` regardless of transaction type — see §3.6 Immutability.
 
 ### BR-12: Goal-Linked Accounts Are Protected From Direct Expense Transactions
 An account linked to at least one active, non-completed goal (`isActive = true`, `status != 'COMPLETED'`) is a **protected account**. The following transaction types are blocked when `accountId` resolves to a protected account:
@@ -1319,6 +1315,16 @@ ALLOWED:  INCOME, TRANSFER, SETTLEMENT
 **Implementation:** `TransactionService.createTransaction` checks whether the source `account` is goal-linked before accepting the transaction. Uses `GoalRepository.existsByAccountIdAndActiveTrueAndStatusNot(accountId, "COMPLETED")`.
 
 **No account type constraint:** Any account type (`CASH`, `BANK`, `WALLET`) may back a goal. The protection comes from the goal linkage, not the account type. FDs and RDs are out of scope for MVP — see §11.
+
+### BR-13: Transaction Backdating Warning
+When a transaction's `date` is more than 7 days before the `account.createdAt` date (the account setup date), the API returns an optional `warning` field alongside the normal success response. The transaction is NOT blocked — the user may legitimately be reconstructing history from a bank statement. The warning informs them that their opening balance may need updating to reflect the historical transaction.
+
+**Why 7 days:** Minor date differences (timezone, bank processing delay) should not trigger warnings. Significant backdating (more than a week before setup) is the meaningful case.
+
+**Frontend responsibility:** Show the warning as a toast notification once per account per session. Suppress subsequent warnings for the same account to avoid repetitive friction during bulk historical entry.
+
+### BR-14: Authentication Requires an Existing Principal
+A cryptographically valid JWT can still reference a `userId` that no longer exists (e.g. after a database reset, or an account deletion feature added later). `JwtAuthFilter` verifies the referenced user still exists (`UserRepository.existsById`) before marking a request as authenticated — a token for a deleted user is treated identically to an invalid one, and the request falls through unauthenticated to the standard `401 UNAUTHORIZED` response via `JwtAuthEntryPoint`. This must be uniform across every endpoint; no controller or service should independently decide what a stale-but-valid token means.
 
 ---
 
@@ -1373,16 +1379,17 @@ These items are consciously not part of the current MVP build. Listed here so re
 
 ---
 
-*Moneyflow Domain Model & API Contract — v1.2.0*
+*Moneyflow Domain Model & API Contract — v1.3.0*
 *Backend MVP complete: auth, accounts, transactions, goals, dashboard, analytics.*
 *PlannedAmount module, LLM insights, MonthSummary computation, yearly analytics — all Phase 2.*
-*Analytics query model: mode/anchor (MONTHLY/WEEKLY) + CUSTOM from/to date range.*
-*BR-13 added: transaction backdating warning (7-day threshold, non-blocking, frontend surfaces once per session).*
-*Next: Ionic frontend migration — Strapi → MoneyFlow Spring Boot API.*
+*Analytics query model: mode/anchor (MONTHLY/WEEKLY) + CUSTOM from/to date range. Analytics module finalised: 4 cards (Income, Expense, Savings+rate, Debt Ratio). Balance card removed — account balance belongs on Dashboard, not in period-filtered cashflow view. Monthly breakdown deferred to Phase 2.*
 *Transaction date vs. entry date distinction documented (§3.6): date = when money moved, createdAt = when logged. No speculative computed fields added (loggedLate removed — no screen consumer, not built speculatively).*
-*BR-03 extended to cover TRANSFER edit/delete atomicity, not just creation.*
+*BR-03 extended to cover TRANSFER edit/delete atomicity, not just creation, and fixed to be symmetric across source and destination account on both PUT and DELETE — previously only the source account was reversed, silently duplicating balance on the destination side on delete, and never correcting it at all on update.*
 *BR-05 extended with implementation-order constraint for PUT: load old value before overwriting.*
 *BR-06 extended with cross-month double-invalidation edge case on date edits.*
-*BR-07 extended to cover goal progress reversal on TRANSFER amount correction.*
-*Analytics module finalised: 4 cards (Income, Expense, Savings+rate, Debt Ratio). Balance card removed — account balance belongs on Dashboard, not in period-filtered cashflow view. Date range query model: from/to params + preset period shortcuts. Monthly breakdown deferred to Phase 2.*
-*Next: Analytics module implementation → frontend integration*
+*BR-07 goal-progress reversal wired into PUT /transactions/{id} amount corrections — previously only applied on POST and DELETE, so editing the amount on a goal-linked TRANSFER left the goal's currentProgress stale.*
+*BR-11 corrected to reflect actual intended behaviour: notes are editable via PUT for all transaction types except SETTLEMENT, not universally immutable as an earlier revision of this doc stated.*
+*BR-13 added: transaction backdating warning (7-day threshold, non-blocking, frontend surfaces once per session).*
+*BR-14 added: JwtAuthFilter now verifies the JWT's principal still exists before authenticating a request, closing a gap where a token for a deleted user was inconsistently handled per-endpoint (404 on some, silent empty success on others).*
+*GET /transactions made pageable (default size 100), with hasPreviousMonthData/hasNextMonthData added for calendar and financial-year month-navigation UI.*
+*Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
