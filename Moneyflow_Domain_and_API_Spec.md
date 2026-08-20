@@ -10,7 +10,7 @@
 | 1.0.0 | Initial specification |
 | 1.1.0 | Removed income profiling wizard. Income tracked naturally via transactions. Simplified UserProfile to preferences only. Removed OtherIncome entity. |
 | 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
-| 1.3.0 | `GET /transactions` documented as paginated (default `size=100`, `page`/`size`/`sort` query params) with month-navigation hints (`hasPreviousMonthData`/`hasNextMonthData`) for calendar- and financial-year-filtered requests, plus a `flowType=INCOME\|EXPENSE` filter composing with either period filter. `PUT /transactions/{id}` scope clarified: corrects `amount`, `category`, `date`, and `notes` (non-SETTLEMENT transactions only) — never `type`, `accountId`, `toAccountId`, or `toGoalId`. BR-03/BR-05 TRANSFER reversal fixed to be symmetric across source and destination account on both PUT and DELETE. BR-07 extended: goal-progress reversal wired into `PUT /transactions/{id}` amount corrections, and progress now also decreases when a TRANSFER's source account is itself goal-linked (withdrawal), not just increases on arrival. `to_account_id` is now always stored for a TRANSFER regardless of whether the destination was picked directly or via a goal, with the `transactions` `CHECK` constraint relaxed to match. New BR-15: `POST /transactions` rejects a TRANSFER whose destination resolves to the same account as the source. |
+| 1.3.0 | `GET /transactions` documented as paginated (default `size=100`, `page`/`size`/`sort` query params) with month-navigation hints (`hasPreviousMonthData`/`hasNextMonthData`) for calendar- and financial-year-filtered requests, plus a `flowType=INCOME\|EXPENSE` filter composing with either period filter. `sort` clarified as Spring Data's standard `property,direction` convention (repeatable for multi-field sort) — not a separate `direction` param. `PUT /transactions/{id}` scope clarified: corrects `amount`, `category`, `date`, and `notes` (non-SETTLEMENT transactions only) — never `type`, `accountId`, `toAccountId`, or `toGoalId`. BR-03/BR-05 TRANSFER reversal fixed to be symmetric across source and destination account on both PUT and DELETE. BR-07 extended: goal-progress reversal wired into `PUT /transactions/{id}` amount corrections, and progress now also decreases when a TRANSFER's source account is itself goal-linked (withdrawal), not just increases on arrival. `to_account_id` is now always stored for a TRANSFER regardless of whether the destination was picked directly or via a goal, with the `transactions` `CHECK` constraint relaxed to match. New BR-15: `POST /transactions` rejects a TRANSFER whose destination resolves to the same account as the source. `GET /accounts` and `GET /accounts/{id}` gained a response-only `goalLinked` flag (batch-resolved for the list endpoint to avoid N+1), driving the piggy-bank icon on the Accounts screen. |
 
 ---
 
@@ -113,6 +113,7 @@ Derived from: Add Account screen (page 38), Accounts list (page 39), Excel Accou
 | `displayOrder` | Integer | For UI ordering |
 | `isActive` | Boolean | Soft delete flag |
 | `createdAt` | LocalDateTime | |
+| `goalLinked` | Boolean | Response-only, not a stored column — `true` when the account backs at least one active, non-completed goal (same rule as BR-12's protected-account check). Drives the piggy-bank icon on the Accounts screen. |
 
 **Key design decision:** `currentBalance` is kept in sync in real-time as transactions are posted. It is never recomputed from history. This makes balance reads instant regardless of how many transactions exist.
 
@@ -723,15 +724,17 @@ Useful for filtering account dropdowns in various UI contexts (e.g. show only BA
 {
   "data": {
     "accounts": [
-      { "id": "uuid", "name": "MAXIS Bank", "type": "CASH", "currentBalance": 35000.00, "colorLabel": "#E8A04D" },
-      { "id": "uuid", "name": "India Bank", "type": "BANK", "currentBalance": 3457.55, "colorLabel": "#4A90D9" }
+      { "id": "uuid", "name": "MAXIS Bank", "type": "CASH", "currentBalance": 35000.00, "colorLabel": "#E8A04D", "goalLinked": false },
+      { "id": "uuid", "name": "India Bank", "type": "BANK", "currentBalance": 3457.55, "colorLabel": "#4A90D9", "goalLinked": true }
     ],
     "totalBalance": 38457.55
   }
 }
 ```
 
-#### GET /accounts/{id}
+`goalLinked` is resolved per request, not stored — for the list endpoint, every active goal for the user is fetched once and checked by account ID in memory, rather than one existence query per account, to avoid an N+1 as the account list grows.
+
+#### GET /accounts/{id} — same shape as a single entry above, including `goalLinked`.
 #### PUT /accounts/{id} — name, type, colorLabel. Balance not directly editable.
 #### DELETE /accounts/{id} — soft delete. Reject if account has transactions.
 
@@ -834,6 +837,8 @@ flowType=INCOME|EXPENSE                 filter by cash-flow direction, independe
 page=0&size=100                         0-indexed page, size defaults to 100
 sort=date,desc                          optional override of the default sort
 ```
+
+`sort` follows Spring Data's standard `property,direction` convention — direction is embedded in the same param, not a separate `direction` param (a bare `direction=DESC` alongside `sort=date` is silently ignored; Spring falls back to ascending). Repeat `sort` to order by more than one field, each with its own direction, e.g. `sort=type,asc&sort=date,desc`. Defaults to `date,desc` when omitted.
 
 At most one of the two period filter pairs may be supplied. Neither supplied means an unfiltered listing across all of the user's transactions — still paginated the same way. `flowType` composes with either period filter (or with neither) since it's an orthogonal axis, not a third alternative to calendar-vs-FY.
 
@@ -1412,4 +1417,6 @@ These items are consciously not part of the current MVP build. Listed here so re
 *to_account_id now always stored for a TRANSFER, not just when the destination was picked as a direct account — fixes a bug where deleting a goal-linked TRANSFER never reversed the goal's account balance, since the column was left NULL for that path. Schema CHECK constraint relaxed to match: a TRANSFER just needs to_account_id set, with to_goal_id as optional metadata rather than a mutually-exclusive alternative.*
 *BR-07 extended to cover goal-progress decreasing when a TRANSFER's source account is itself goal-linked (withdrawal), not just increasing on arrival — previously only createTransaction's arrival path was wired up, so withdrawing from a goal account never corrected its currentProgress.*
 *BR-15 added: POST /transactions rejects a TRANSFER whose destination resolves to the same account as the source, whether reached via toAccountId or toGoalId — closes a gap where transferring into one's own goal-linked account inflated currentProgress with no real balance movement.*
+*GET /accounts and GET /accounts/{id} gained a response-only goalLinked flag, resolved via the same active/non-completed goal rule as BR-12, batch-computed for the list endpoint to avoid an N+1 query per account.*
+*GET /transactions sort param clarified as Spring Data's property,direction convention — a separate direction param was silently ignored (Spring defaults to ascending when sort has no embedded direction), which was the root cause of a list appearing unsorted despite an explicit direction being sent.*
 *Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
