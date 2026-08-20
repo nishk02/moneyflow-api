@@ -14,6 +14,7 @@ import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,7 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Stream;
 
 @Service
@@ -34,12 +36,25 @@ public class TransactionService {
     private final CategoryRepository categoryRepository;
     private final GoalRepository goalRepository;
 
+    private static final Set<String> SORTABLE_PROPERTIES = Set.of("date", "amount", "createdAt");
+
+    private void validateSort(Sort sort) {
+        sort.forEach(order -> {
+            if (!SORTABLE_PROPERTIES.contains(order.getProperty())) {
+                throw ApiException.badRequest("Cannot sort by '" + order.getProperty() + "'");
+            }
+        });
+    }
+
     @Transactional(readOnly = true)
     public TransactionListResponse getTransactions(
             String userId, Integer calendarYear, Integer calendarMonth,
             String financialYear, String financialMonth, FlowType flowType, Pageable pageable) {
 
         PeriodFilter period = resolvePeriod(calendarYear, calendarMonth, financialYear, financialMonth);
+
+        validateSort(pageable.getSort());
+
         Specification<Transaction> spec = combine(userId, period.current(), flowType);
 
         Page<TransactionResponse> page = transactionRepository.findAll(spec, pageable)

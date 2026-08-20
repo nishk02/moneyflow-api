@@ -20,6 +20,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -42,19 +44,23 @@ public class DashboardService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> ApiException.notFound("User not found"));
 
+        // Goals
+        List<Goal> activeGoals = goalRepository.findByUserIdAndActiveTrueOrderByDisplayOrderAsc(userId);
+        Set<String> goalLinkedAccountIds = activeGoals.stream()
+                .filter(g -> !"COMPLETED".equals(g.getStatus()))
+                .map(g -> g.getAccount().getId())
+                .collect(Collectors.toSet());
+
         // Accounts
         List<Account> accounts = accountRepository.findByUserIdAndActiveTrue(userId);
 
         List<AccountResponse> accountResponses = accounts.stream()
-                .map(AccountResponse::from)
+                .map(a -> AccountResponse.from(a, goalLinkedAccountIds.contains(a.getId())))
                 .toList();
 
         BigDecimal totalBalance = accounts.stream()
                 .map(Account::getCurrentBalance)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        // Goals
-        List<Goal> activeGoals = goalRepository.findByUserIdAndActiveTrueOrderByDisplayOrderAsc(userId);
 
         BigDecimal monthlyTarget = activeGoals.stream()
                 .filter(g -> !"COMPLETED".equals(g.getStatus()))

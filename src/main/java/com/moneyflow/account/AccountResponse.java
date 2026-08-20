@@ -10,9 +10,10 @@ public record AccountResponse(
         BigDecimal currentBalance,
         String currency,
         String colorLabel,
-        int displayOrder
+        int displayOrder,
+        boolean goalLinked
 ) {
-    public static AccountResponse from(Account account) {
+    public static AccountResponse from(Account account, boolean goalLinked) {
         return new AccountResponse(
                 account.getId(),
                 account.getName(),
@@ -20,7 +21,8 @@ public record AccountResponse(
                 account.getCurrentBalance(),
                 account.getCurrency(),
                 account.getColorLabel(),
-                account.getDisplayOrder()
+                account.getDisplayOrder(),
+                goalLinked
         );
     }
 }

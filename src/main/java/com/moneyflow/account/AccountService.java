@@ -2,6 +2,7 @@ package com.moneyflow.account;
 
 import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
+import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.transaction.TransactionService;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +11,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -17,15 +20,15 @@ public class AccountService {
     private final AccountRepository accountRepository;
     private final UserRepository userRepository;
     private final TransactionService transactionService;
+    private final GoalRepository goalRepository;
 
     public List<AccountResponse> getAccounts(String userId) {
-        return accountRepository.findByUserIdAndActiveTrue(userId).stream().map(AccountResponse::from).toList();
+        return mapAccounts(accountRepository.findByUserIdAndActiveTrue(userId), userId);
     }
 
     public AccountSummaryResponse getAccountsSummary(String userId, String type) {
         List<AccountResponse> accounts = type != null
-                ? accountRepository.findByUserIdAndTypeAndActiveTrue(userId, type)
-                .stream().map(AccountResponse::from).toList()
+                ? mapAccounts(accountRepository.findByUserIdAndTypeAndActiveTrue(userId, type), userId)
                 : getAccounts(userId);
         BigDecimal totalBalance = accounts.stream()
                 .map(AccountResponse::currentBalance)
@@ -57,13 +60,14 @@ public class AccountService {
             transactionService.createOpeningBalanceSettlement(savedAccount, user);
         }
 
-        return AccountResponse.from(savedAccount);
+        return AccountResponse.from(savedAccount, false);
     }
 
     public AccountResponse getAccount(String userId, String accountId) {
-        return accountRepository.findByIdAndUserId(accountId, userId)
-                .map(AccountResponse::from)
+        Account account = accountRepository.findByIdAndUserId(accountId, userId)
                 .orElseThrow(() -> ApiException.notFound("Account not found"));
+        boolean goalLinked = goalRepository.existsByAccountIdAndActiveTrueAndStatusNot(accountId, "COMPLETED");
+        return AccountResponse.from(account, goalLinked);
     }
 
     @Transactional
@@ -104,7 +108,7 @@ public class AccountService {
                     savedAccount, getUser(userId), oldBalance, request.currentBalance());
         }
 
-        return AccountResponse.from(savedAccount);
+        return AccountResponse.from(savedAccount, false);
     }
 
     @Transactional
@@ -114,6 +118,19 @@ public class AccountService {
 
         account.setActive(false);
         accountRepository.save(account);
+    }
+
+    private List<AccountResponse> mapAccounts(List<Account> accounts, String userId) {
+        Set<String> goalLinkedAccountIds = goalRepository
+                .findByUserIdAndActiveTrueOrderByDisplayOrderAsc(userId)
+                .stream()
+                .filter(g -> !"COMPLETED".equals(g.getStatus()))
+                .map(g -> g.getAccount().getId())
+                .collect(Collectors.toSet());
+
+        return accounts.stream()
+                .map(a -> AccountResponse.from(a, goalLinkedAccountIds.contains(a.getId())))
+                .toList();
     }
 
     private User getUser(String userId) {
