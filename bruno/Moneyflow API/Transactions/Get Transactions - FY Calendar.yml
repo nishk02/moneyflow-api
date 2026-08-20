@@ -22,15 +22,11 @@ http:
       type: query
       disabled: true
     - name: sort
-      value: date
-      type: query
-      disabled: true
-    - name: direction
-      value: DESC
+      value: date,desc
       type: query
       disabled: true
     - name: flowType
-      value: INCOME
+      value: "INCOME "
       type: query
       disabled: true
   auth:
