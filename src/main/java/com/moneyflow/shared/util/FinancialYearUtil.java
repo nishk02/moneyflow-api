@@ -1,6 +1,9 @@
 package com.moneyflow.shared.util;
 
+import com.moneyflow.transaction.FlowType;
 import com.moneyflow.transaction.Transaction;
+import com.moneyflow.transaction.TransactionSpecifications;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDate;
 

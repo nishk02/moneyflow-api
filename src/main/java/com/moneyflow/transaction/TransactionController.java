@@ -23,11 +23,12 @@ public class TransactionController extends BaseController {
             @RequestParam(required = false) Integer calendarMonth,
             @RequestParam(required = false) String financialYear,
             @RequestParam(required = false) String financialMonth,
+            @RequestParam(required = false) FlowType flowType,
             @PageableDefault(size = 100, sort = "date", direction = Sort.Direction.DESC) Pageable pageable) {
         String userId = getCurrentUserId();
         return ResponseEntity.ok(ApiResponse.success(
                 transactionService.getTransactions(
-                        userId, calendarYear, calendarMonth, financialYear, financialMonth, pageable)));
+                        userId, calendarYear, calendarMonth, financialYear, financialMonth, flowType, pageable)));
     }
 
     @PostMapping

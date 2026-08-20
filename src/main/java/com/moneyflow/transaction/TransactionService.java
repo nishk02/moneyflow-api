@@ -14,12 +14,16 @@ import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
@@ -33,48 +37,21 @@ public class TransactionService {
     @Transactional(readOnly = true)
     public TransactionListResponse getTransactions(
             String userId, Integer calendarYear, Integer calendarMonth,
-            String financialYear, String financialMonth, Pageable pageable) {
+            String financialYear, String financialMonth, FlowType flowType, Pageable pageable) {
 
-        if (calendarYear != null && calendarMonth != null) {
-            Page<TransactionResponse> page = transactionRepository
-                    .findByUserIdAndCalendarYearAndCalendarMonthOrderByDateDescCreatedAtDesc(
-                            userId, calendarYear, calendarMonth, pageable).map(TransactionResponse::from);
+        PeriodFilter period = resolvePeriod(calendarYear, calendarMonth, financialYear, financialMonth);
+        Specification<Transaction> spec = combine(userId, period.current(), flowType);
 
-            YearMonth current = YearMonth.of(calendarYear, calendarMonth);
-            YearMonth previous = current.minusMonths(1);
-            YearMonth next = current.plusMonths(1);
-
-            boolean hasPrevious = transactionRepository.existsByUserIdAndCalendarYearAndCalendarMonth(
-                    userId, previous.getYear(), previous.getMonthValue());
-            boolean hasNext = transactionRepository.existsByUserIdAndCalendarYearAndCalendarMonth(
-                    userId, next.getYear(), next.getMonthValue());
-
-            return TransactionListResponse.of(PageResponse.from(page), hasPrevious, hasNext);
-        }
-
-        if (financialYear != null && financialMonth != null) {
-            int month = Integer.parseInt(financialMonth);
-            Page<TransactionResponse> page = transactionRepository
-                    .findByUserIdAndFinancialYearAndMonthOrderByDateDescCreatedAtDesc(
-                            userId, financialYear, month, pageable)
-                    .map(TransactionResponse::from);
-
-            FinancialYearUtil.FinancialMonth previous = FinancialYearUtil.previous(financialYear, month);
-            FinancialYearUtil.FinancialMonth next = FinancialYearUtil.next(financialYear, month);
-
-            boolean hasPrevious = transactionRepository.existsByUserIdAndFinancialYearAndMonth(
-                    userId, previous.financialYear(), previous.month());
-            boolean hasNext = transactionRepository.existsByUserIdAndFinancialYearAndMonth(
-                    userId, next.financialYear(), next.month());
-
-            return TransactionListResponse.of(PageResponse.from(page), hasPrevious, hasNext);
-        }
-
-        Page<TransactionResponse> page = transactionRepository
-                .findByUserIdOrderByDateDescCreatedAtDesc(userId, pageable)
+        Page<TransactionResponse> page = transactionRepository.findAll(spec, pageable)
                 .map(TransactionResponse::from);
 
-        return TransactionListResponse.of(PageResponse.from(page));
+        if (period.previous() == null) {
+            return TransactionListResponse.of(PageResponse.from(page));
+        }
+
+        boolean hasPrevious = transactionRepository.exists(combine(userId, period.previous(), flowType));
+        boolean hasNext = transactionRepository.exists(combine(userId, period.next(), flowType));
+        return TransactionListResponse.of(PageResponse.from(page), hasPrevious, hasNext);
     }
 
     @Transactional(readOnly = true)
@@ -105,6 +82,9 @@ public class TransactionService {
         validateTransferDestination(request);
 
         Account toAccount = resolveToAccount(request, userId);
+        if (toAccount != null && toAccount.getId().equals(account.getId())) {
+            throw ApiException.badRequest("Transfer destination cannot be the same account you're transferring from");
+        }
 
         Transaction transaction = buildTransaction(user, account, category, toAccount, request);
 
@@ -114,14 +94,7 @@ public class TransactionService {
         if (toAccount != null) accountRepository.save(toAccount);
 
         // BR-07: update goal progress when TRANSFER targets a goal
-        if (request.toGoalId() != null
-                && transaction.getType() == TransactionType.TRANSFER) {
-            goalRepository.findByIdAndUserId(request.toGoalId(), userId)
-                    .ifPresent(goal -> {
-                        goal.setCurrentProgress(goal.getCurrentProgress().add(request.amount()));
-                        goalRepository.save(goal);
-                    });
-        }
+        applyGoalProgress(transaction, userId);
 
         Transaction saved = transactionRepository.save(transaction);
         TransactionResponse response = TransactionResponse.from(saved);
@@ -297,7 +270,7 @@ public class TransactionService {
         t.setPlanned(false);
         t.setToGoalId(request.toGoalId());
 
-        if (request.toAccountId() != null) {
+        if (toAccount != null) {
             t.setToAccount(toAccount);
         }
 
@@ -342,23 +315,41 @@ public class TransactionService {
     }
 
     private void reverseGoalProgress(Transaction transaction, String userId) {
-        if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
+        if (transaction.getType() != TransactionType.TRANSFER) return;
+
+        if (transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), userId)
                     .ifPresent(goal -> {
                         goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
                         goalRepository.save(goal);
                     });
+            return;
         }
+
+        goalRepository.findByAccountIdAndActiveTrueAndStatusNot(transaction.getAccount().getId(), "COMPLETED")
+                .ifPresent(goal -> {
+                    goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
+                    goalRepository.save(goal);
+                });
     }
 
     private void applyGoalProgress(Transaction transaction, String userId) {
-        if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
+        if (transaction.getType() != TransactionType.TRANSFER) return;
+
+        if (transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), userId)
                     .ifPresent(goal -> {
                         goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
                         goalRepository.save(goal);
                     });
+            return;
         }
+
+        goalRepository.findByAccountIdAndActiveTrueAndStatusNot(transaction.getAccount().getId(), "COMPLETED")
+                .ifPresent(goal -> {
+                    goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
+                    goalRepository.save(goal);
+                });
     }
 
     private boolean isGoalProtectedType(TransactionType type) {
@@ -366,5 +357,60 @@ public class TransactionService {
             case FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING, BORROWING, REPAYMENT -> true;
             default -> false;
         };
+    }
+
+    private boolean hasData(String userId, Specification<Transaction> periodSpec, FlowType flowType) {
+        Specification<Transaction> spec = TransactionSpecifications.belongsToUser(userId)
+                .and(periodSpec);
+        if (flowType != null) {
+            spec = spec.and(TransactionSpecifications.hasFlowType(flowType));
+        }
+        return transactionRepository.exists(spec);
+    }
+
+    private record PeriodFilter(
+            Specification<Transaction> current,
+            Specification<Transaction> previous,
+            Specification<Transaction> next
+    ) {
+        static PeriodFilter none() {
+            return new PeriodFilter(null, null, null);
+        }
+    }
+
+    private PeriodFilter resolvePeriod(
+            Integer calendarYear, Integer calendarMonth, String financialYear, String financialMonth) {
+
+        if (calendarYear != null && calendarMonth != null) {
+            YearMonth current = YearMonth.of(calendarYear, calendarMonth);
+            YearMonth previous = current.minusMonths(1);
+            YearMonth next = current.plusMonths(1);
+            return new PeriodFilter(
+                    TransactionSpecifications.inCalendarMonth(calendarYear, calendarMonth),
+                    TransactionSpecifications.inCalendarMonth(previous.getYear(), previous.getMonthValue()),
+                    TransactionSpecifications.inCalendarMonth(next.getYear(), next.getMonthValue()));
+        }
+
+        if (financialYear != null && financialMonth != null) {
+            int month = Integer.parseInt(financialMonth);
+            FinancialYearUtil.FinancialMonth previous = FinancialYearUtil.previous(financialYear, month);
+            FinancialYearUtil.FinancialMonth next = FinancialYearUtil.next(financialYear, month);
+            return new PeriodFilter(
+                    TransactionSpecifications.inFinancialMonth(financialYear, month),
+                    TransactionSpecifications.inFinancialMonth(previous.financialYear(), previous.month()),
+                    TransactionSpecifications.inFinancialMonth(next.financialYear(), next.month()));
+        }
+
+        return PeriodFilter.none();
+    }
+
+    private Specification<Transaction> combine(String userId, Specification<Transaction> periodSpec, FlowType flowType) {
+        List<Specification<Transaction>> filters = Stream.of(
+                TransactionSpecifications.belongsToUser(userId),
+                periodSpec,
+                flowType != null ? TransactionSpecifications.hasFlowType(flowType) : null
+        ).filter(Objects::nonNull).toList();
+
+        return Specification.allOf(filters);
     }
 }

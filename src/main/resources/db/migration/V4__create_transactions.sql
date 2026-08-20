@@ -22,12 +22,7 @@ CREATE TABLE transactions
     planned_amount_id   TEXT,
     created_at          TIMESTAMP   NOT NULL,
     updated_at          TIMESTAMP   NOT NULL,
-    CHECK (
-        type != 'TRANSFER' OR (
-            (to_account_id IS NOT NULL AND to_goal_id IS NULL) OR
-            (to_account_id IS NULL AND to_goal_id IS NOT NULL)
-        )
-    )
+    CHECK (type != 'TRANSFER' OR to_account_id IS NOT NULL)
 );
 
 CREATE INDEX idx_transactions_user_date ON transactions (user_id, date DESC);
