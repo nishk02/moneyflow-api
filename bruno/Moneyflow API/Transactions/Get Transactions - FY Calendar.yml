@@ -29,6 +29,10 @@ http:
       value: DESC
       type: query
       disabled: true
+    - name: flowType
+      value: INCOME
+      type: query
+      disabled: true
   auth:
     type: bearer
     token: "{{AUTH_TOKEN}}"

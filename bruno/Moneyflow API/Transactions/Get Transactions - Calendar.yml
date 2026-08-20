@@ -29,6 +29,10 @@ http:
       value: "10"
       type: query
       disabled: true
+    - name: flowType
+      value: EXPENSE
+      type: query
+      disabled: true
   auth:
     type: bearer
     token: "{{AUTH_TOKEN}}"
