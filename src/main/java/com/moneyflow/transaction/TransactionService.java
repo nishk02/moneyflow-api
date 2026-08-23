@@ -52,23 +52,31 @@ public class TransactionService {
             String userId, Integer calendarYear, Integer calendarMonth,
             String financialYear, String financialMonth, FlowType flowType, Pageable pageable) {
         Pageable stablePageable = ensureStableOrder(pageable);
-
-        PeriodFilter period = resolvePeriod(calendarYear, calendarMonth, financialYear, financialMonth);
-
         validateSort(pageable.getSort());
 
-        Specification<Transaction> spec = combine(userId, period.current(), flowType);
+        Specification<Transaction> currentSpec = resolveCurrentPeriodSpec(
+                calendarYear, calendarMonth, financialYear, financialMonth);
+        Specification<Transaction> spec = combine(userId, currentSpec, flowType);
 
         Page<TransactionResponse> page = transactionRepository.findAll(spec, stablePageable)
                 .map(TransactionResponse::from);
 
-        if (period.previous() == null) {
+        boolean calendarFilterActive = calendarYear != null && calendarMonth != null;
+        boolean financialFilterActive = financialYear != null && financialMonth != null;
+
+        if (!calendarFilterActive && !financialFilterActive) {
             return TransactionListResponse.of(PageResponse.from(page));
         }
 
-        boolean hasPrevious = transactionRepository.exists(combine(userId, period.previous(), flowType));
-        boolean hasNext = transactionRepository.exists(combine(userId, period.next(), flowType));
-        return TransactionListResponse.of(PageResponse.from(page), hasPrevious, hasNext);
+        PeriodTarget previousPeriod = calendarFilterActive
+                ? findPreviousCalendarPeriod(userId, calendarYear, calendarMonth, flowType)
+                : findPreviousFinancialPeriod(userId, financialYear, Integer.parseInt(financialMonth), flowType);
+
+        PeriodTarget nextPeriod = calendarFilterActive
+                ? findNextCalendarPeriod(userId, calendarYear, calendarMonth, flowType)
+                : findNextFinancialPeriod(userId, financialYear, Integer.parseInt(financialMonth), flowType);
+
+        return TransactionListResponse.of(PageResponse.from(page), previousPeriod, nextPeriod);
     }
 
     @Transactional(readOnly = true)
@@ -394,40 +402,51 @@ public class TransactionService {
         return transactionRepository.exists(spec);
     }
 
-    private record PeriodFilter(
-            Specification<Transaction> current,
-            Specification<Transaction> previous,
-            Specification<Transaction> next
-    ) {
-        static PeriodFilter none() {
-            return new PeriodFilter(null, null, null);
+    private Specification<Transaction> resolveCurrentPeriodSpec(
+            Integer calendarYear, Integer calendarMonth, String financialYear, String financialMonth) {
+        if (calendarYear != null && calendarMonth != null) {
+            return TransactionSpecifications.inCalendarMonth(calendarYear, calendarMonth);
         }
+        if (financialYear != null && financialMonth != null) {
+            return TransactionSpecifications.inFinancialMonth(financialYear, Integer.parseInt(financialMonth));
+        }
+        return null;
     }
 
-    private PeriodFilter resolvePeriod(
-            Integer calendarYear, Integer calendarMonth, String financialYear, String financialMonth) {
+    private static final int FY_SKIP_SEARCH_LIMIT = 24; // 2 years either direction
 
-        if (calendarYear != null && calendarMonth != null) {
-            YearMonth current = YearMonth.of(calendarYear, calendarMonth);
-            YearMonth previous = current.minusMonths(1);
-            YearMonth next = current.plusMonths(1);
-            return new PeriodFilter(
-                    TransactionSpecifications.inCalendarMonth(calendarYear, calendarMonth),
-                    TransactionSpecifications.inCalendarMonth(previous.getYear(), previous.getMonthValue()),
-                    TransactionSpecifications.inCalendarMonth(next.getYear(), next.getMonthValue()));
+    private PeriodTarget findPreviousCalendarPeriod(String userId, int year, int month, FlowType flowType) {
+        LocalDate boundary = LocalDate.of(year, month, 1);
+        Transaction found = findNearest(userId, TransactionSpecifications.dateBefore(boundary), flowType, Sort.Direction.DESC);
+        return found == null ? null : PeriodTarget.calendar(found.getCalendarYear(), found.getCalendarMonth());
+    }
+
+    private PeriodTarget findNextCalendarPeriod(String userId, int year, int month, FlowType flowType) {
+        LocalDate boundary = YearMonth.of(year, month).atEndOfMonth();
+        Transaction found = findNearest(userId, TransactionSpecifications.dateAfter(boundary), flowType, Sort.Direction.ASC);
+        return found == null ? null : PeriodTarget.calendar(found.getCalendarYear(), found.getCalendarMonth());
+    }
+
+    private PeriodTarget findPreviousFinancialPeriod(String userId, String financialYear, int month, FlowType flowType) {
+        FinancialYearUtil.FinancialMonth cursor = FinancialYearUtil.previous(financialYear, month);
+        for (int i = 0; i < FY_SKIP_SEARCH_LIMIT; i++) {
+            if (hasData(userId, TransactionSpecifications.inFinancialMonth(cursor.financialYear(), cursor.month()), flowType)) {
+                return PeriodTarget.financial(cursor.financialYear(), cursor.month());
+            }
+            cursor = FinancialYearUtil.previous(cursor.financialYear(), cursor.month());
         }
+        return null;
+    }
 
-        if (financialYear != null && financialMonth != null) {
-            int month = Integer.parseInt(financialMonth);
-            FinancialYearUtil.FinancialMonth previous = FinancialYearUtil.previous(financialYear, month);
-            FinancialYearUtil.FinancialMonth next = FinancialYearUtil.next(financialYear, month);
-            return new PeriodFilter(
-                    TransactionSpecifications.inFinancialMonth(financialYear, month),
-                    TransactionSpecifications.inFinancialMonth(previous.financialYear(), previous.month()),
-                    TransactionSpecifications.inFinancialMonth(next.financialYear(), next.month()));
+    private PeriodTarget findNextFinancialPeriod(String userId, String financialYear, int month, FlowType flowType) {
+        FinancialYearUtil.FinancialMonth cursor = FinancialYearUtil.next(financialYear, month);
+        for (int i = 0; i < FY_SKIP_SEARCH_LIMIT; i++) {
+            if (hasData(userId, TransactionSpecifications.inFinancialMonth(cursor.financialYear(), cursor.month()), flowType)) {
+                return PeriodTarget.financial(cursor.financialYear(), cursor.month());
+            }
+            cursor = FinancialYearUtil.next(cursor.financialYear(), cursor.month());
         }
-
-        return PeriodFilter.none();
+        return null;
     }
 
     private Specification<Transaction> combine(String userId, Specification<Transaction> periodSpec, FlowType flowType) {
@@ -450,5 +469,12 @@ public class TransactionService {
 
     private String formatAmount(BigDecimal amount) {
         return amount.stripTrailingZeros().toPlainString();
+    }
+
+    private Transaction findNearest(String userId, Specification<Transaction> directionSpec,
+                                    FlowType flowType, Sort.Direction order) {
+        Specification<Transaction> spec = combine(userId, directionSpec, flowType);
+        Pageable top1 = PageRequest.of(0, 1, Sort.by(order, "date"));
+        return transactionRepository.findAll(spec, top1).stream().findFirst().orElse(null);
     }
 }

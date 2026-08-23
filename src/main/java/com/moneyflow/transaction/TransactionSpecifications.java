@@ -2,6 +2,8 @@ package com.moneyflow.transaction;
 
 import org.springframework.data.jpa.domain.Specification;
 
+import java.time.LocalDate;
+
 public class TransactionSpecifications {
     private TransactionSpecifications() {
     }
@@ -24,5 +26,13 @@ public class TransactionSpecifications {
 
     public static Specification<Transaction> hasFlowType(FlowType flowType) {
         return (root, query, criteriaBuilder) -> root.get("type").in(flowType.getTypes());
+    }
+
+    public static Specification<Transaction> dateBefore(LocalDate date) {
+        return (root, query, cb) -> cb.lessThan(root.get("date"), date);
+    }
+
+    public static Specification<Transaction> dateAfter(LocalDate date) {
+        return (root, query, cb) -> cb.greaterThan(root.get("date"), date);
     }
 }

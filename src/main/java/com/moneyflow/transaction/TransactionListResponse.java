@@ -6,8 +6,8 @@ import com.moneyflow.shared.dto.PageResponse;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record TransactionListResponse(
         PageResponse<TransactionResponse> transactions,
-        Boolean hasPreviousMonthData,
-        Boolean hasNextMonthData
+        PeriodTarget previousPeriod,
+        PeriodTarget nextPeriod
 ) {
     public static TransactionListResponse of(PageResponse<TransactionResponse> transactions) {
         return new TransactionListResponse(transactions, null, null);
@@ -15,8 +15,8 @@ public record TransactionListResponse(
 
     public static TransactionListResponse of(
             PageResponse<TransactionResponse> transactions,
-            boolean hasPreviousMonthData,
-            boolean hasNextMonthData) {
-        return new TransactionListResponse(transactions, hasPreviousMonthData, hasNextMonthData);
+            PeriodTarget previousPeriod,
+            PeriodTarget nextPeriod) {
+        return new TransactionListResponse(transactions, previousPeriod, nextPeriod);
     }
 }
