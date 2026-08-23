@@ -10,7 +10,40 @@
 | 1.0.0 | Initial specification |
 | 1.1.0 | Removed income profiling wizard. Income tracked naturally via transactions. Simplified UserProfile to preferences only. Removed OtherIncome entity. |
 | 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
-| 1.3.0 | `GET /transactions` documented as paginated (default `size=100`, `page`/`size`/`sort` query params) with month-navigation hints (`hasPreviousMonthData`/`hasNextMonthData`) for calendar- and financial-year-filtered requests, plus a `flowType=INCOME\|EXPENSE` filter composing with either period filter. `sort` clarified as Spring Data's standard `property,direction` convention (repeatable for multi-field sort) — not a separate `direction` param. `PUT /transactions/{id}` scope clarified: corrects `amount`, `category`, `date`, and `notes` (non-SETTLEMENT transactions only) — never `type`, `accountId`, `toAccountId`, or `toGoalId`. BR-03/BR-05 TRANSFER reversal fixed to be symmetric across source and destination account on both PUT and DELETE. BR-07 extended: goal-progress reversal wired into `PUT /transactions/{id}` amount corrections, and progress now also decreases when a TRANSFER's source account is itself goal-linked (withdrawal), not just increases on arrival. `to_account_id` is now always stored for a TRANSFER regardless of whether the destination was picked directly or via a goal, with the `transactions` `CHECK` constraint relaxed to match. New BR-15: `POST /transactions` rejects a TRANSFER whose destination resolves to the same account as the source. `GET /accounts` and `GET /accounts/{id}` gained a response-only `goalLinked` flag (batch-resolved for the list endpoint to avoid N+1), driving the piggy-bank icon on the Accounts screen. |
+| 1.3.0 | Transactions API hardened (pagination, sort, flowType filter, PUT scope); TRANSFER/goal reversal made fully symmetric; three new business rules (BR-15/16/17); Accounts gained `goalLinked`; Categories gained `isInternal`; Dashboard `balancePercentage`/`savedThisMonth` corrected. Full breakdown below. |
+
+<details>
+<summary><strong>1.3.0 detailed changes</strong> (click to expand)</summary>
+
+**`GET /transactions`**
+- Paginated (`page`/`size`, default `size=100`); `sort` uses Spring Data's `property,direction` convention, repeatable for multi-field sort — not a separate `direction` param.
+- Month-navigation hints `hasPreviousMonthData`/`hasNextMonthData` added for calendar- and FY-filtered requests.
+- New `flowType=INCOME|EXPENSE` filter, composes with either period filter.
+
+**`PUT /transactions/{id}`**
+- Scope clarified: corrects `amount`, `category`, `date`, `notes` (non-SETTLEMENT only) — never `type`, `accountId`, `toAccountId`, `toGoalId`.
+
+**TRANSFER / goal correctness**
+- BR-03/BR-05: TRANSFER reversal made symmetric across source *and* destination account, on both PUT and DELETE (previously only source was reversed).
+- BR-07: goal-progress reversal wired into PUT amount corrections; progress now also decreases on withdrawal (TRANSFER whose source account is goal-linked), not just increases on arrival.
+- `to_account_id` now always stored for a TRANSFER regardless of direct-account vs. goal destination; `transactions` `CHECK` constraint relaxed to match.
+- **New BR-15:** `POST /transactions` rejects a TRANSFER whose destination resolves to the same account as the source.
+- **New BR-16:** `POST`/`PUT /transactions` reject a future-dated `date` (`400`, hard block — unlike BR-13's backdating warning), since balance effects apply immediately and a future date would understate `currentBalance` today. Forecasting noted as a separate, deferred §11 concept built on `PlannedAmount`, not future-dated `Transaction` rows.
+
+**Accounts**
+- `GET /accounts` and `GET /accounts/{id}` gained a response-only `goalLinked` flag (batch-resolved to avoid N+1), driving the piggy-bank icon.
+
+**Categories**
+- `isInternal` added (new seed row `cat-35 Opening Balance`); excluded from `GET /categories`, rejected identically to a nonexistent category by `POST`/`PUT /transactions` (no distinguishing error, per BR-14's enumeration-safety precedent) — **new BR-17**.
+- BR-01's opening-balance `SETTLEMENT` now uses this category instead of sharing `Adjustment` (`cat-02`) with BR-02 — distinguishable by category, not by parsing `notes` text.
+- BR-02's adjustment `notes` amounts normalized (`stripTrailingZeros().toPlainString()`) so old/new never show mismatched decimal precision.
+
+**Dashboard**
+- `balancePercentage` documented as a deliberate solvency/safety-margin indicator (not a bounded monthly-depletion gauge); display bands (>30% healthy, 20–30% caution, ≤20% low) traced to the Excel template's conditional formatting.
+- Formula extended to add this month's `Opening Balance`-categorized `SETTLEMENT` sum to the denominator (fixes a false `0%`/"critically low" reading on onboarding day); now returns `null`, not `0`, when the denominator is zero.
+- `savedThisMonth` fixed to sum only `TRANSFER` rows with `toGoalId` set — a plain account-to-account transfer no longer counts as savings.
+
+</details>
 
 ---
 
@@ -156,6 +189,7 @@ Derived from: Excel Categories sheet (34 items)
 | `icon` | String | Emoji for UI display |
 | `isSystem` | Boolean | True = seeded, cannot be deleted by user |
 | `isActive` | Boolean | User can hide categories |
+| `isInternal` | Boolean | True = reserved for system-generated transactions only, never returned by `GET /categories`, never accepted by `POST`/`PUT /transactions` — see BR-17. Currently one row: `Opening Balance` (`cat-35`, used by BR-01). Distinct from `isSystem`/`isActive`: those describe a category a user can see and pick, just not delete or hide-toggle; `isInternal` means the user never sees or picks it at all. |
 | `displayOrder` | Integer | |
 
 ---
@@ -378,6 +412,7 @@ CREATE TABLE categories (
     icon TEXT,
     is_system INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
+    is_internal INTEGER NOT NULL DEFAULT 0,
     display_order INTEGER NOT NULL DEFAULT 0
 );
 
@@ -872,6 +907,8 @@ At most one of the two period filter pairs may be supplied. Neither supplied mea
 
 `POST /transactions` additionally rejects a TRANSFER whose destination resolves to the same account as the source (`400`, whether reached via `toAccountId` or `toGoalId`) — see BR-15.
 
+Both `POST /transactions` and `PUT /transactions/{id}` reject any `date` later than today (`400`) — see BR-16.
+
 ---
 
 ### Planned Amounts
@@ -1040,6 +1077,14 @@ Single endpoint — assembles everything the Home screen needs in one call.
 }
 ```
 
+**`balancePercentage` — what it actually represents:** `totalAvailableBalance ÷ (totalIncomeThisMonth + openingBalanceThisMonth) × 100` (§7), or `null` when that denominator is zero (no data yet to compute a ratio against — not the same as "critically low"). This is deliberately a **solvency / safety-margin indicator** — "how large is your total balance relative to what came into the system this month" — not a bounded, monthly-depleting gauge. It routinely reads above 100%, because the numerator (`totalAvailableBalance`) is the user's full accumulated balance across every account and every past month, while the denominator is only this month's inflow. It is a direct port of the original Excel template's `TOTAL BALANCE` header cell (`=D3/B3`), inherited unchanged because the underlying question — "am I running dangerously thin relative to what I've brought in this month" — is the same one the original spreadsheet was built to answer, and the thresholds below were already tuned by hand against real spending before this app existed.
+
+**`openingBalanceThisMonth` — the onboarding-day fix:** `totalIncomeThisMonth` alone is `0` on the day a user first adds accounts, since an opening balance is a `SETTLEMENT`, not `INCOME` — so a user who just funded ₹60,000 across two accounts would otherwise see `0%` (reading as critically low, under the bands below) despite having real money and no expenses yet. The fix sums this month's `SETTLEMENT` transactions filtered specifically to the `Opening Balance` category (`cat-35`, BR-01/BR-17) — never `Adjustment` (`cat-02`, BR-02) — and adds that to `totalIncomeThisMonth` as the denominator. Because BR-01 only ever fires once per account, this term is naturally `0` in every month after the account's creation month, so the formula quietly reduces back to plain `totalBalance ÷ totalIncomeThisMonth` once onboarding is behind the user — no ongoing special-casing needed.
+
+`balancePercentage` display bands (frontend-owned, Angular), carried over from the Excel template's conditional formatting on that same cell: **> 30% healthy (green)** · **20–30% caution (amber)** · **≤ 20% low (red)**. A `null` value (denominator still zero) is a distinct fourth state — "not enough data yet," not a color band at all. Deliberately *not* modelled as a phone-style "low power mode" that drains from 100% to 0% over the month — that shape belongs to a different metric (`dailyExpenseLimit`, §7 — a live, shrinking safe-to-spend figure), not to this one. Considered and rejected: reworking `balancePercentage` itself into a bounded per-month depletion gauge — rejected because it would replace a validated, already-battle-tested solvency signal with an unrelated metric wearing the same name.
+
+**`savedThisMonth` — goal contributions only, not all transfers:** sums `TRANSFER` transactions with `toGoalId` set, in the current calendar month — a plain account-to-account transfer (e.g. moving cash to the right account to pay a bill) does not count, since it was never a savings action. This is a *gross* figure — money that arrived into a goal this month — matching `Goal.savedThisMonth`'s existing definition (§3.8) exactly, deliberately not netted against any BR-07 goal withdrawals in the same month; that would be a different, distinct metric if ever needed later.
+
 `savingsMessage` logic:
 - If `savedThisMonth >= monthlyTarget` → `"🎯 You are all set! Just hold on to it 💰"`
 - Else → `"You can save ₹{monthlyTarget - savedThisMonth} today!"`
@@ -1120,7 +1165,7 @@ Full FY rollup. **Phase 2** — deferred. Year view in the Cash Flow screen is a
 ### Categories
 
 #### GET /categories
-All active categories. Called once on app load, cached on the Angular side.
+All active, user-selectable categories. Called once on app load, cached on the Angular side. Excludes `isInternal = true` rows entirely — the `Opening Balance` category (`cat-35`) never appears here, since it's system-reserved (BR-17) and would otherwise show up as a pickable option in the Add Entry category dropdown.
 
 ```json
 {
@@ -1188,7 +1233,8 @@ The service collects the `MonthSummary` data + goal progress + category breakdow
 
 | Metric | Formula | Used in |
 |---|---|---|
-| Balance percentage | `balance / totalIncome × 100` | Dashboard ring, Cash Flow header |
+| Balance percentage | `totalBalance / (totalIncomeThisMonth + openingBalanceThisMonth) × 100`, `null` if denominator is 0 | Dashboard ring |
+| Saved this month | `SUM(amount)` for TRANSFER where `toGoalId IS NOT NULL`, current calendar month | Dashboard savings message |
 | Daily expense limit | `balance / daysRemainingInMonth` | Monthly summary |
 | Debt-income ratio | `totalDebt / totalIncome × 100` | Monthly summary |
 | Savings rate | `totalSavings / totalIncome × 100` | Monthly summary |
@@ -1206,52 +1252,57 @@ The service collects the `MonthSummary` data + goal progress + category breakdow
 Applied via Flyway migration `V1__seed_categories.sql` on first launch.
 
 ```sql
-INSERT INTO categories (id, name, icon, is_system, is_active, display_order) VALUES
-('cat-01','Account','📊',1,1,1),
-('cat-02','Adjustment','🔄',1,1,2),
-('cat-03','Allowances','💰',1,1,3),
-('cat-04','Cashback','💸',1,1,4),
-('cat-05','CC Payment','💳',1,1,5),
-('cat-06','Clothing','👔',1,1,6),
-('cat-07','Donation','🤝',1,1,7),
-('cat-08','Family & Friends','👨‍👩‍👧',1,1,8),
-('cat-09','Food & Beverages','🍔',1,1,9),
-('cat-10','Fuel','⛽',1,1,10),
-('cat-11','Gifts','🎁',1,1,11),
-('cat-12','Groceries','🛒',1,1,12),
-('cat-13','Grooming','💈',1,1,13),
-('cat-14','Healthcare','🏥',1,1,14),
-('cat-15','Household','🏠',1,1,15),
-('cat-16','Insurance','🛡',1,1,16),
-('cat-17','Investments','📈',1,1,17),
-('cat-18','Loan','🏦',1,1,18),
-('cat-19','Miscellaneous','📦',1,1,19),
-('cat-20','Paycheck','💵',1,1,20),
-('cat-21','Pets','🐾',1,1,21),
-('cat-22','Phone','📱',1,1,22),
-('cat-23','Refreshment','😋',1,1,23),
-('cat-24','Refund','↩️',1,1,24),
-('cat-25','Rent','🏠',1,1,25),
-('cat-26','Restaurant','🍽',1,1,26),
-('cat-27','Savings','🐷',1,1,27),
-('cat-28','Subscriptions','🔔',1,1,28),
-('cat-29','Telephone','☎️',1,1,29),
-('cat-30','Tips','🤌',1,1,30),
-('cat-31','Transport','🚌',1,1,31),
-('cat-32','Utilities','💡',1,1,32),
-('cat-33','Vehicle','🚗',1,1,33),
-('cat-34','Wellness','🧘',1,1,34);
+INSERT INTO categories (id, name, icon, is_system, is_active, is_internal, display_order) VALUES
+('cat-01','Account','📊',1,1,0,1),
+('cat-02','Adjustment','🔄',1,1,0,2),
+('cat-03','Allowances','💰',1,1,0,3),
+('cat-04','Cashback','💸',1,1,0,4),
+('cat-05','CC Payment','💳',1,1,0,5),
+('cat-06','Clothing','👔',1,1,0,6),
+('cat-07','Donation','🤝',1,1,0,7),
+('cat-08','Family & Friends','👨‍👩‍👧',1,1,0,8),
+('cat-09','Food & Beverages','🍔',1,1,0,9),
+('cat-10','Fuel','⛽',1,1,0,10),
+('cat-11','Gifts','🎁',1,1,0,11),
+('cat-12','Groceries','🛒',1,1,0,12),
+('cat-13','Grooming','💈',1,1,0,13),
+('cat-14','Healthcare','🏥',1,1,0,14),
+('cat-15','Household','🏠',1,1,0,15),
+('cat-16','Insurance','🛡',1,1,0,16),
+('cat-17','Investments','📈',1,1,0,17),
+('cat-18','Loan','🏦',1,1,0,18),
+('cat-19','Miscellaneous','📦',1,1,0,19),
+('cat-20','Paycheck','💵',1,1,0,20),
+('cat-21','Pets','🐾',1,1,0,21),
+('cat-22','Phone','📱',1,1,0,22),
+('cat-23','Refreshment','😋',1,1,0,23),
+('cat-24','Refund','↩️',1,1,0,24),
+('cat-25','Rent','🏠',1,1,0,25),
+('cat-26','Restaurant','🍽',1,1,0,26),
+('cat-27','Savings','🐷',1,1,0,27),
+('cat-28','Subscriptions','🔔',1,1,0,28),
+('cat-29','Telephone','☎️',1,1,0,29),
+('cat-30','Tips','🤌',1,1,0,30),
+('cat-31','Transport','🚌',1,1,0,31),
+('cat-32','Utilities','💡',1,1,0,32),
+('cat-33','Vehicle','🚗',1,1,0,33),
+('cat-34','Wellness','🧘',1,1,0,34),
+('cat-35','Opening Balance','🏁',1,1,1,35);
 ```
+
+`cat-35` is `isInternal = true` — set only by BR-01's auto-generated opening-balance `SETTLEMENT`, never user-selectable (BR-17). Every other row is `isInternal = false`, unchanged from the original 34-category set.
 
 ---
 
 ## 9. Key Business Rules
 
 ### BR-01: Opening Balance Auto-Transaction
-When an account is **created** (`POST /accounts`) with `currentBalance > 0`, the service automatically creates a `SETTLEMENT` transaction, category `Adjustment`, dated today, `notes = "Opening balance"`. This is what appears as "Current Balance / Adjustment MAXIS Bank" in the Figma Cash Flow list. The user never creates this manually. Amount is always positive (enforced by `@DecimalMin(0)` on the request).
+When an account is **created** (`POST /accounts`) with `currentBalance > 0`, the service automatically creates a `SETTLEMENT` transaction, category `Opening Balance` (`cat-35`, `isInternal = true` — see BR-17), dated today, `notes = "Opening balance"`. This is what appears as "Current Balance / Opening Balance MAXIS Bank" in the Figma Cash Flow list. The user never creates this manually. Amount is always positive (enforced by `@DecimalMin(0)` on the request).
+
+`Opening Balance` is a deliberately separate category from `Adjustment` (used by BR-02) even though both are system-generated `SETTLEMENT` rows — Dashboard's `balancePercentage` (§6, §7) sums this month's opening-balance transactions specifically by category to make the metric sensible on onboarding day, and a later BR-02 correction must never be counted the same way (see §6 Dashboard note).
 
 ### BR-02: Balance Correction Auto-Transaction
-When an existing account's `currentBalance` is **edited** (`PUT /accounts/{id}` with a `currentBalance` differing from the stored value), the service automatically creates a second `SETTLEMENT` transaction for the delta, category `Adjustment`, dated today, `notes = "Balance adjustment: ₹{old} → ₹{new}"`. Unlike BR-01, this delta may be negative (a downward correction). Triggered by deliberate user action — editing the account, not the general-purpose Add Entry form — but the transaction itself is system-generated, not user-typed.
+When an existing account's `currentBalance` is **edited** (`PUT /accounts/{id}` with a `currentBalance` differing from the stored value), the service automatically creates a second `SETTLEMENT` transaction for the delta, category `Adjustment` (`cat-02`, unchanged from BR-01's category), dated today, `notes = "Balance adjustment: ₹{old} → ₹{new}"` (both amounts normalized via `stripTrailingZeros().toPlainString()` so one side never shows a spurious decimal the other doesn't — e.g. `₹30500 → ₹32000`, not `₹30500.0 → ₹32000`). Unlike BR-01, this delta may be negative (a downward correction). Triggered by deliberate user action — editing the account, not the general-purpose Add Entry form — but the transaction itself is system-generated, not user-typed.
 
 **Design rationale (BR-01 & BR-02):** Both mirror the **Adjustment Method** real banks use for reconciliation corrections — the original record is never edited; a new entry bridges the gap, with the discrepancy described in that new entry rather than silently merged into history. See §3.4.
 
@@ -1347,6 +1398,21 @@ A cryptographically valid JWT can still reference a `userId` that no longer exis
 
 **Why this matters beyond being a meaningless entry:** a self-transfer's balance effect nets to zero on `currentBalance` regardless (the same account gets debited and credited by the same amount), but if the destination was reached via a goal, `currentProgress` still increases by the full amount under BR-07's "arriving" rule — with no real money having moved anywhere. That's phantom savings: the goal shows progress a bank statement would never confirm. Rejecting the self-transfer at creation is simpler and safer than trying to special-case the goal-progress math around it.
 
+### BR-16: Transaction Date Cannot Be in the Future
+Both `POST /transactions` and `PUT /transactions/{id}` reject a `date` later than today — `400 Bad Request`. Unlike BR-13's backdating warning, this is a hard block, not a soft warning, because the two directions aren't symmetric: backdating has a legitimate real-world justification (reconstructing history from a bank statement), so it's allowed with a nudge; a future-dated transaction has no equivalent justification, because `date` means "when the money actually moved" (§3.6) and money that hasn't moved yet cannot have a transaction date.
+
+**Why this matters beyond being conceptually odd:** every transaction's balance effect applies immediately and unconditionally on `POST` (BR-05 — `currentBalance` is updated in real time). A future-dated expense would debit `currentBalance` *today*, silently understating the money the user actually has available right now — corrupting the single most load-bearing number in the app, along with everything computed from it (`balancePercentage`, BR-12's goal-protection check, the Dashboard total). This isn't a UI inconvenience to work around with better month-navigation; it's a data-integrity gap that had to be closed at the source.
+
+**Where genuinely-future information belongs instead:** a known upcoming payment or expected income has a real home already — `PlannedAmount` (Phase 2, deferred, see §11) — not `Transaction`. The distinction is deliberate: a `Transaction` is a ledger fact (money definitely moved), while a `PlannedAmount` (and any forecast built on top of it) is a prediction (money is expected to move). Letting a future date into `Transaction` would blur a boundary real accounting always keeps separate — a general ledger never contains forecast rows.
+
+### BR-17: Internal Categories Are System-Reserved
+A category with `isInternal = true` (currently just `Opening Balance`, `cat-35`) exists purely for the app's own bookkeeping and must never be user-visible or user-selectable:
+
+- **`GET /categories`** excludes every `isInternal = true` row from its response entirely — it never reaches the Angular category dropdown in the first place.
+- **`POST /transactions` and `PUT /transactions/{id}`** reject a request naming an internal category's ID — but *identically* to how they reject a nonexistent one (`404 Category not found`), not with a distinct `400` explaining why. This is deliberate, not an oversight: a distinguishable error would let a caller enumerate which category IDs are reserved just by probing responses, the same enumeration risk `/auth/signin`'s intentionally-generic `401` (§6 Auth) is designed to prevent. Implementation is a single `.filter(c -> !c.isInternal())` folded into the existing `findById(...).orElseThrow(...)` category lookup — no separate branch to leak through.
+
+**Why this exists:** without it, a client could tag an ordinary expense with `Opening Balance`'s category ID, which would silently count that expense as opening-balance inflow in Dashboard's `balancePercentage` calculation (§6) — corrupting a metric that's supposed to reflect real onboarding funding, not an arbitrary transaction a user (or a bug) happened to mislabel.
+
 ---
 
 ## 10. Screens-to-API Mapping
@@ -1397,6 +1463,7 @@ These items are consciously not part of the current MVP build. Listed here so re
 | Goal `status` automatic transitions | Goal entity | Status field exists; transitions not automated — set manually. | Phase 2 Goal enhancements. |
 | FD/RD (Fixed Deposits / Recurring Deposits) as account types | User discussion | Different financial instrument — lock-in, maturity, interest. Doesn't fit `Account` model. | Separate `Investment` module, post-MVP. |
 | `BalanceAfter` snapshot per transaction | Analytics discussion | Considered and deliberately rejected in favour of `currentBalance - sumNetAfterDate` approach for period-end balance queries. No new column needed. | If performance profiling shows the aggregation approach is insufficient at scale. |
+| Projected/forecast balance (`GET /planned-amounts/forecast?until=...` or similar) | BR-16 discussion — Excel template's month-to-month carry-forward | Genuinely valuable ("at this rate, you'll have ₹X by date Y"), but deliberately *not* built as future-dated `Transaction` rows (blocked by BR-16) — a forecast is a prediction, not a ledger fact, and the two must never share a table. Belongs on top of `PlannedAmount`: `currentBalance` + sum of active `PlannedAmount` occurrences due before the target date. Month-to-month balance carry-forward itself needs no new work — `account.currentBalance` (BR-05) already accumulates continuously with no monthly reset, unlike the Excel template's per-month-sheet structure. | Phase 2, after `PlannedAmount` is built. |
 
 ---
 
@@ -1419,4 +1486,8 @@ These items are consciously not part of the current MVP build. Listed here so re
 *BR-15 added: POST /transactions rejects a TRANSFER whose destination resolves to the same account as the source, whether reached via toAccountId or toGoalId — closes a gap where transferring into one's own goal-linked account inflated currentProgress with no real balance movement.*
 *GET /accounts and GET /accounts/{id} gained a response-only goalLinked flag, resolved via the same active/non-completed goal rule as BR-12, batch-computed for the list endpoint to avoid an N+1 query per account.*
 *GET /transactions sort param clarified as Spring Data's property,direction convention — a separate direction param was silently ignored (Spring defaults to ascending when sort has no embedded direction), which was the root cause of a list appearing unsorted despite an explicit direction being sent.*
+*Dashboard balancePercentage design note added (§6): confirmed as an intentional solvency/safety-margin indicator (totalBalance ÷ this-month's-income, can exceed 100%), directly inherited from the original Excel template's TOTAL BALANCE cell formula and its hand-tuned conditional-formatting thresholds — not a bug, and not to be reworked into a bounded battery-style gauge. Display bands (>30 green, 20–30 amber, ≤20 red) are frontend-only, no backend change.*
+*BR-16 added: transaction dates cannot be in the future, hard-blocked on both POST and PUT — closes a gap where a future-dated entry silently understated currentBalance today, since balance effects apply immediately on creation (BR-05). Deliberately asymmetric with BR-13 (backdating is warned, not blocked; postdating has no equivalent real-world justification). Future balance projection/forecasting noted as a legitimate but separate, deferred idea (§11) — belongs on PlannedAmount as a computed forecast, never as a future-dated Transaction row; month-to-month balance carry-forward itself needs no new work since currentBalance already accumulates continuously with no monthly reset.*
+*BR-17 added: categories can now be isInternal (new seed row cat-35 "Opening Balance"), hidden from GET /categories and rejected identically to a nonexistent category (not a distinguishable error, matching /auth/signin's enumeration-safety precedent) if a client tries to submit one via POST/PUT /transactions. BR-01 switched from sharing Adjustment (cat-02) with BR-02 to this new dedicated category, making the two distinguishable by a stable foreign key instead of by matching notes text — closes the loop that made the balancePercentage fix below possible.*
+*Dashboard balancePercentage extended to add this month's Opening-Balance-categorized SETTLEMENT total to the denominator (previously totalIncomeThisMonth alone, which read as a false 0%/critical on onboarding day before any INCOME transaction existed) and now returns null instead of 0 when the denominator is zero — null meaning "not enough data," distinct from the low/red display band. savedThisMonth corrected to sum only TRANSFER rows with toGoalId set — a plain account-to-account transfer no longer inflates it. BR-02's balance-adjustment notes now format both amounts through stripTrailingZeros().toPlainString() so they never show mismatched decimal precision on one side.*
 *Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
