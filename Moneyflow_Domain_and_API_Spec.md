@@ -10,14 +10,14 @@
 | 1.0.0 | Initial specification |
 | 1.1.0 | Removed income profiling wizard. Income tracked naturally via transactions. Simplified UserProfile to preferences only. Removed OtherIncome entity. |
 | 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
-| 1.3.0 | Transactions API hardened (pagination, sort, flowType filter, PUT scope); TRANSFER/goal reversal made fully symmetric; three new business rules (BR-15/16/17); Accounts gained `goalLinked`; Categories gained `isInternal`; Dashboard `balancePercentage`/`savedThisMonth` corrected. Full breakdown below. |
+| 1.3.0 | Transactions API hardened (pagination, sort, flowType filter, PUT scope, smart-skip month navigation); TRANSFER/goal reversal made fully symmetric; three new business rules (BR-15/16/17); Accounts gained `goalLinked`; Categories gained `isInternal`; Dashboard `balancePercentage`/`savedThisMonth` corrected. Full breakdown below. |
 
 <details>
 <summary><strong>1.3.0 detailed changes</strong> (click to expand)</summary>
 
 **`GET /transactions`**
 - Paginated (`page`/`size`, default `size=100`); `sort` uses Spring Data's `property,direction` convention, repeatable for multi-field sort — not a separate `direction` param.
-- Month-navigation hints `hasPreviousMonthData`/`hasNextMonthData` added for calendar- and FY-filtered requests.
+- Month-navigation hints `previousPeriod`/`nextPeriod` added for calendar- and FY-filtered requests — resolve to the *nearest period with data*, not just the adjacent one, so a backdated entry several months back stays reachable even through empty months in between (originally shipped as booleans `hasPreviousMonthData`/`hasNextMonthData`, later replaced once backdating exposed the adjacent-only gap).
 - New `flowType=INCOME|EXPENSE` filter, composes with either period filter.
 
 **`PUT /transactions/{id}`**
@@ -879,7 +879,7 @@ At most one of the two period filter pairs may be supplied. Neither supplied mea
 
 `flowType` is a grouping over `TransactionType`, not a raw type value — `INCOME` maps to the single `INCOME` type; `EXPENSE` maps to `FIXED_EXPENSE`, `VARIABLE_EXPENSE`, `LENDING`, `BORROWING`, `REPAYMENT`. `TRANSFER` and `SETTLEMENT` are deliberately excluded from both — they're money movement and balance corrections, not real income or spending, matching how Dashboard already buckets `TRANSFER` separately as "savings." A transaction of either excluded type simply won't appear when `flowType` is set, and only shows up in the unfiltered listing.
 
-`hasPreviousMonthData`/`hasNextMonthData` respect whichever `flowType` is active — if the adjacent month has transactions but none match the current `flowType`, the hint correctly reports no data for that direction, so the frontend's arrow doesn't lead to an empty filtered screen.
+`previousPeriod`/`nextPeriod` respect whichever `flowType` is active — the resolved target is always a period that has at least one transaction matching the current `flowType`, so the frontend's arrow never lands on an empty filtered screen.
 
 **Response 200:**
 ```json
@@ -893,13 +893,19 @@ At most one of the two period filter pairs may be supplied. Neither supplied mea
       "totalPages": 1,
       "hasNext": false
     },
-    "hasPreviousMonthData": false,
-    "hasNextMonthData": true
+    "previousPeriod": { "calendarYear": 2026, "calendarMonth": 6 },
+    "nextPeriod": null
   }
 }
 ```
 
-`hasPreviousMonthData`/`hasNextMonthData` are present only when `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth` are supplied — they report whether the immediately adjacent month has any transactions at all, letting the frontend enable/disable the Cash Flow screen's `←`/`→` month-navigation arrows without an extra round trip per tap. Both fields are absent (not `false`) on the unfiltered listing — there is no "adjacent month" for an unfiltered view.
+`previousPeriod`/`nextPeriod` are present only when `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth` are supplied — both absent entirely (not `null`) on the unfiltered listing, since there's no "adjacent period" concept for an unfiltered view. Each shape matches whichever lens is active: `{ calendarYear, calendarMonth }` for a calendar-filtered request, `{ financialYear, financialMonth }` for an FY-filtered one — never both on the same object.
+
+**Smart-skip, not merely adjacent:** these were originally booleans (`hasPreviousMonthData`/`hasNextMonthData`) checking only the literally-adjacent month. That broke the moment BR-13's backdating let a user log a transaction several months back while the months in between stayed empty — the arrow would disable at the first empty month and the earlier data would become unreachable through the UI, even though it was still sitting in the database. `previousPeriod`/`nextPeriod` instead resolve to the *nearest period that actually has data*, skipping empty gaps automatically — `null` means genuinely nothing further in that direction, not "the adjacent period happens to be empty."
+
+**Calendar lens** resolves this in one indexed query — `calendarYear`/`calendarMonth` are plain integers, so the boundary (`date < firstDayOfCurrentMonth` / `date > lastDayOfCurrentMonth`) is unambiguous, and the nearest transaction on the correct side of that boundary already carries the target `calendarYear`/`calendarMonth` as denormalized fields.
+
+**FY lens** resolves this differently, deliberately: converting a `financialYear` label like `FY26-27` back into an absolute calendar boundary means guessing which century its two-digit year belongs to — real but avoidable complexity for a personal app. Instead, it steps financial-month by financial-month (reusing `FinancialYearUtil.previous`/`next`) checking for data at each step, capped at 24 steps (2 years either direction) as an explicit, generous bound rather than an unbounded walk.
 
 #### GET /transactions/{id}
 #### PUT /transactions/{id} — corrects `amount`, `category`, and `date` for any transaction type. Also corrects `notes` — for every type *except* `SETTLEMENT`, whose notes are append-only and locked from creation (see BR-11). Never changes `type`, `accountId`, `toAccountId`, or `toGoalId` — see §3.6 Immutability. For a TRANSFER, reverses the old effect on both the source and destination account (and goal progress — arriving via `toGoalId` or leaving a goal-linked source account, see BR-07) before reapplying with the new values — see BR-03, BR-05, BR-07.
@@ -1287,7 +1293,7 @@ INSERT INTO categories (id, name, icon, is_system, is_active, is_internal, displ
 ('cat-32','Utilities','💡',1,1,0,32),
 ('cat-33','Vehicle','🚗',1,1,0,33),
 ('cat-34','Wellness','🧘',1,1,0,34),
-('cat-35','Opening Balance','🏁',1,1,1,35);
+('cat-35','Opening Balance','🏛️',1,1,1,35);
 ```
 
 `cat-35` is `isInternal = true` — set only by BR-01's auto-generated opening-balance `SETTLEMENT`, never user-selectable (BR-17). Every other row is `isInternal = false`, unchanged from the original 34-category set.
@@ -1490,4 +1496,5 @@ These items are consciously not part of the current MVP build. Listed here so re
 *BR-16 added: transaction dates cannot be in the future, hard-blocked on both POST and PUT — closes a gap where a future-dated entry silently understated currentBalance today, since balance effects apply immediately on creation (BR-05). Deliberately asymmetric with BR-13 (backdating is warned, not blocked; postdating has no equivalent real-world justification). Future balance projection/forecasting noted as a legitimate but separate, deferred idea (§11) — belongs on PlannedAmount as a computed forecast, never as a future-dated Transaction row; month-to-month balance carry-forward itself needs no new work since currentBalance already accumulates continuously with no monthly reset.*
 *BR-17 added: categories can now be isInternal (new seed row cat-35 "Opening Balance"), hidden from GET /categories and rejected identically to a nonexistent category (not a distinguishable error, matching /auth/signin's enumeration-safety precedent) if a client tries to submit one via POST/PUT /transactions. BR-01 switched from sharing Adjustment (cat-02) with BR-02 to this new dedicated category, making the two distinguishable by a stable foreign key instead of by matching notes text — closes the loop that made the balancePercentage fix below possible.*
 *Dashboard balancePercentage extended to add this month's Opening-Balance-categorized SETTLEMENT total to the denominator (previously totalIncomeThisMonth alone, which read as a false 0%/critical on onboarding day before any INCOME transaction existed) and now returns null instead of 0 when the denominator is zero — null meaning "not enough data," distinct from the low/red display band. savedThisMonth corrected to sum only TRANSFER rows with toGoalId set — a plain account-to-account transfer no longer inflates it. BR-02's balance-adjustment notes now format both amounts through stripTrailingZeros().toPlainString() so they never show mismatched decimal precision on one side.*
-*Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
+*GET /transactions month-navigation hints replaced: hasPreviousMonthData/hasNextMonthData (booleans, adjacent-month-only) → previousPeriod/nextPeriod (resolved period objects, or null). Root cause: BR-13 backdating can leave empty months between "now" and an older backdated entry, and the boolean check only ever looked at the literally-adjacent month — the arrow would disable at the first empty month, permanently hiding real data beyond it. The new fields resolve to the nearest period that actually has data, skipping gaps automatically; calendar lens does this via a single indexed date-range query, FY lens via a bounded (24-step) walk through FinancialYearUtil.previous/next to avoid guessing which century a two-digit FY label belongs to. The now-unused PeriodFilter record and resolvePeriod method were removed as part of this change; the previously-dead hasData helper is now used by the FY-lens walk. cat-35's icon changed 🏁 → 🏛️.*
+*Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API). Year-based month-availability picker (GET /transactions/available-periods or similar) designed in discussion but not yet implemented — paused pending frontend integration of the smart-skip arrows above.*
