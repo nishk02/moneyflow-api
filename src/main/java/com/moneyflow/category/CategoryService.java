@@ -11,6 +11,7 @@ public class CategoryService {
     private final CategoryRepository categoryRepository;
 
     public List<CategoryResponse> getAllCategories() {
-        return categoryRepository.findAll().stream().map(CategoryResponse::from).toList();
+        return categoryRepository.findByActiveTrueAndInternalFalseOrderByDisplayOrderAsc()
+                .stream().map(CategoryResponse::from).toList();
     }
 }

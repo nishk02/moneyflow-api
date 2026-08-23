@@ -48,6 +48,20 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             @Param("year") int year,
             @Param("month") int month);
 
+    // TransactionRepository.java
+    @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
+            "WHERE t.user.id = :userId " +
+            "AND t.type IN :types " +
+            "AND t.category.id = :categoryId " +
+            "AND t.calendarYear = :year " +
+            "AND t.calendarMonth = :month")
+    BigDecimal sumByUserIdAndTypesAndCategoryAndMonth(
+            @Param("userId") String userId,
+            @Param("types") List<TransactionType> types,
+            @Param("categoryId") String categoryId,
+            @Param("year") int year,
+            @Param("month") int month);
+
     @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
             "WHERE t.user.id = :userId " +
             "AND t.type IN :types " +
@@ -69,4 +83,15 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             @Param("userId") String userId,
             @Param("from") LocalDate from,
             @Param("to") LocalDate to);
+
+    @Query("SELECT COALESCE(SUM(t.amount), 0) FROM Transaction t " +
+            "WHERE t.user.id = :userId " +
+            "AND t.type = 'TRANSFER' " +
+            "AND t.toGoalId IS NOT NULL " +
+            "AND t.calendarYear = :year " +
+            "AND t.calendarMonth = :month")
+    BigDecimal sumTransferToGoalByCalendarMonth(
+            @Param("userId") String userId,
+            @Param("year") int year,
+            @Param("month") int month);
 }

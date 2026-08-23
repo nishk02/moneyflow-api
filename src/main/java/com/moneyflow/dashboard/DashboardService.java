@@ -5,6 +5,7 @@ import com.moneyflow.account.AccountRepository;
 import com.moneyflow.account.AccountResponse;
 import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
+import com.moneyflow.category.Category;
 import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.exception.ApiException;
@@ -70,9 +71,8 @@ public class DashboardService {
         // Saved this month
         LocalDate now = LocalDate.now();
         BigDecimal savedThisMonth = Optional.ofNullable(transactionRepository
-                .sumByUserIdAndTypesAndMonth(
+                .sumTransferToGoalByCalendarMonth(
                         userId,
-                        List.of(TransactionType.TRANSFER),
                         now.getYear(),
                         now.getMonthValue())).orElse(BigDecimal.ZERO);
 
@@ -84,12 +84,20 @@ public class DashboardService {
                         now.getYear(),
                         now.getMonthValue());
 
-        BigDecimal balancePercentage = totalIncomeThisMonth
-                .compareTo(BigDecimal.ZERO) > 0
-                ? totalBalance
-                    .multiply(new BigDecimal("100"))
-                    .divide(totalIncomeThisMonth, 1, RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
+        BigDecimal openingBalanceThisMonth = transactionRepository
+                .sumByUserIdAndTypesAndCategoryAndMonth(
+                        userId,
+                        List.of(TransactionType.SETTLEMENT),
+                        Category.OPENING_BALANCE_CATEGORY_ID,
+                        now.getYear(),
+                        now.getMonthValue());
+
+        BigDecimal balancePercentageBase = totalIncomeThisMonth.add(openingBalanceThisMonth);
+
+        BigDecimal balancePercentage = balancePercentageBase.compareTo(BigDecimal.ZERO) > 0
+                ? totalBalance.multiply(new BigDecimal("100"))
+                .divide(balancePercentageBase, 1, RoundingMode.HALF_UP)
+                : null;
 
         // Savings message
         String savingsMessage = buildSavingsMessage(savedThisMonth, monthlyTarget, totalBalance);
@@ -106,9 +114,9 @@ public class DashboardService {
         boolean goalsAdded = !activeGoals.isEmpty();
 
         DashboardResponse.OnboardingChecklist checklist = new DashboardResponse.OnboardingChecklist(
-                        accountsAdded,
-                        false, // PlannedAmounts deferred to Phase 2
-                        goalsAdded);
+                accountsAdded,
+                false, // PlannedAmounts deferred to Phase 2
+                goalsAdded);
 
         // Motivational quote
         String quote = MOTIVATIONAL_QUOTES.get(

@@ -13,6 +13,7 @@ import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
@@ -50,6 +51,7 @@ public class TransactionService {
     public TransactionListResponse getTransactions(
             String userId, Integer calendarYear, Integer calendarMonth,
             String financialYear, String financialMonth, FlowType flowType, Pageable pageable) {
+        Pageable stablePageable = ensureStableOrder(pageable);
 
         PeriodFilter period = resolvePeriod(calendarYear, calendarMonth, financialYear, financialMonth);
 
@@ -57,7 +59,7 @@ public class TransactionService {
 
         Specification<Transaction> spec = combine(userId, period.current(), flowType);
 
-        Page<TransactionResponse> page = transactionRepository.findAll(spec, pageable)
+        Page<TransactionResponse> page = transactionRepository.findAll(spec, stablePageable)
                 .map(TransactionResponse::from);
 
         if (period.previous() == null) {
@@ -84,7 +86,12 @@ public class TransactionService {
                 .orElseThrow(() -> ApiException.notFound("Account not found"));
 
         Category category = categoryRepository.findById(request.categoryId())
+                .filter(c -> !c.isInternal())
                 .orElseThrow(() -> ApiException.notFound("Category not found"));
+
+        if (request.date().isAfter(LocalDate.now())) {
+            throw ApiException.badRequest("Transaction date cannot be in the future");
+        }
 
         // BR-12: block direct expense transactions against goal-linked accounts
         if (isGoalProtectedType(request.type())
@@ -140,11 +147,15 @@ public class TransactionService {
 
         if (request.amount() != null) transaction.setAmount(request.amount());
         if (request.date() != null) {
+            if (request.date().isAfter(LocalDate.now())) {
+                throw ApiException.badRequest("Transaction date cannot be in the future");
+            }
             transaction.setDate(request.date());
             FinancialYearUtil.applyDerivedDateFields(transaction, request.date());
         }
         if (request.categoryId() != null) {
             Category category = categoryRepository.findById(request.categoryId())
+                    .filter(c -> !c.isInternal())
                     .orElseThrow(() -> ApiException.notFound("Category not found"));
             transaction.setCategory(category);
         }
@@ -186,14 +197,14 @@ public class TransactionService {
 
     @Transactional
     public void createOpeningBalanceSettlement(Account account, User user) {
-        Category adjustmentCategory = categoryRepository
-                .findById("cat-02")
-                .orElseThrow(() -> ApiException.notFound("Adjustment category not found"));
+        Category openingBalanceCategory = categoryRepository
+                .findById(Category.OPENING_BALANCE_CATEGORY_ID)
+                .orElseThrow(() -> ApiException.notFound("Opening Balance category not found"));
 
         Transaction t = new Transaction();
         t.setUser(user);
         t.setAccount(account);
-        t.setCategory(adjustmentCategory);
+        t.setCategory(openingBalanceCategory);
         t.setType(TransactionType.SETTLEMENT);
         t.setAmount(account.getCurrentBalance());
         t.setNotes("Opening balance");
@@ -219,7 +230,7 @@ public class TransactionService {
         t.setCategory(adjustmentCategory);
         t.setType(TransactionType.SETTLEMENT);
         t.setAmount(delta);
-        t.setNotes(String.format("Balance adjustment: ₹%s → ₹%s", oldBalance, newBalance));
+        t.setNotes(String.format("Balance adjustment: ₹%s → ₹%s", formatAmount(oldBalance), formatAmount(newBalance)));
         t.setDate(LocalDate.now());
         t.setPlanned(false);
         FinancialYearUtil.applyDerivedDateFields(t, LocalDate.now());
@@ -427,5 +438,17 @@ public class TransactionService {
         ).filter(Objects::nonNull).toList();
 
         return Specification.allOf(filters);
+    }
+
+    private Pageable ensureStableOrder(Pageable pageable) {
+        if (pageable.getSort().getOrderFor("createdAt") != null) {
+            return pageable; // caller already asked for a createdAt tiebreaker explicitly
+        }
+        Sort sort = pageable.getSort().and(Sort.by(Sort.Direction.DESC, "createdAt"));
+        return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
+    }
+
+    private String formatAmount(BigDecimal amount) {
+        return amount.stripTrailingZeros().toPlainString();
     }
 }

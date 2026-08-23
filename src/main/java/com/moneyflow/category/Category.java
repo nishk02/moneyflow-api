@@ -12,6 +12,10 @@ import lombok.NoArgsConstructor;
 @Getter
 @NoArgsConstructor
 public class Category {
+    /** System-reserved category for BR-01 opening-balance SETTLEMENT transactions.
+     *  Never user-selectable — see TransactionService's internal-category guard. */
+    public static final String OPENING_BALANCE_CATEGORY_ID = "cat-35";
+
     @Id
     private String id;
 
@@ -25,6 +29,9 @@ public class Category {
 
     @Column(name = "is_active", nullable = false, columnDefinition = "INTEGER")
     private boolean active;
+
+    @Column(name = "is_internal", nullable = false, columnDefinition = "INTEGER")
+    private boolean internal;
 
     @Column(name = "display_order", nullable = false)
     private int displayOrder;
