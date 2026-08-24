@@ -58,6 +58,12 @@ public class TransactionController extends BaseController {
         return ResponseEntity.ok(ApiResponse.success(transactionService.getTransaction(userId, id)));
     }
 
+    @GetMapping("/available-periods")
+    public ResponseEntity<ApiResponse<AvailablePeriodsResponse>> getAvailablePeriods() {
+        String userId = getCurrentUserId();
+        return ResponseEntity.ok(ApiResponse.success(transactionService.getAvailablePeriods(userId)));
+    }
+
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<TransactionResponse>> updateTransaction(
             @PathVariable String id, @Valid @RequestBody UpdateTransactionRequest request) {

@@ -94,4 +94,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             @Param("userId") String userId,
             @Param("year") int year,
             @Param("month") int month);
+
+    @Query("SELECT DISTINCT t.calendarYear, t.calendarMonth FROM Transaction t " +
+            "WHERE t.user.id = :userId ORDER BY t.calendarYear DESC, t.calendarMonth DESC")
+    List<Object[]> findDistinctCalendarPeriods(@Param("userId") String userId);
 }

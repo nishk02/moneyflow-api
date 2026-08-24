@@ -23,9 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.YearMonth;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Stream;
 
 @Service
@@ -84,6 +82,22 @@ public class TransactionService {
         return transactionRepository.findByIdAndUserId(id, userId)
                 .map(TransactionResponse::from)
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
+    }
+
+    // TransactionService.java
+    @Transactional(readOnly = true)
+    public AvailablePeriodsResponse getAvailablePeriods(String userId) {
+        List<Object[]> rows = transactionRepository.findDistinctCalendarPeriods(userId);
+
+        Map<Integer, List<Integer>> monthsByYear = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            int year = (Integer) row[0];
+            int month = (Integer) row[1];
+            monthsByYear.computeIfAbsent(year, k -> new ArrayList<>()).add(month);
+        }
+
+        List<Integer> years = new ArrayList<>(monthsByYear.keySet());
+        return new AvailablePeriodsResponse(years, monthsByYear);
     }
 
     @Transactional
