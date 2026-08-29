@@ -1,0 +1,58 @@
+# ---- Stage 1: Build the application ----
+# Using the full JDK (not JRE) here because compiling needs javac, not just
+# the runtime. This stage's image never ships anywhere - it's discarded
+# after the jar is extracted in Stage 2, so its size doesn't matter.
+FROM eclipse-temurin:21-jdk-jammy AS build
+
+WORKDIR /app
+
+# Copy only what Maven needs to resolve dependencies first. Docker caches
+# each instruction as its own layer - as long as pom.xml and the wrapper
+# don't change, this dependency-download layer is reused on every future
+# build. Only an actual dependency change triggers a re-download.
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN ./mvnw dependency:go-offline -B
+
+# Now copy the real source. This is the layer that changes on every commit,
+# which is exactly why it comes last - it invalidates only this layer and
+# everything after it, never the expensive dependency layer above it.
+COPY src ./src
+
+# Package the app. Tests are deliberately skipped here - they already ran
+# as their own step in the CI pipeline before this Docker build starts, so
+# re-running them here would just slow down every image build for zero new
+# information.
+RUN ./mvnw clean package -DskipTests -B
+
+# ---- Stage 2: Run the application ----
+# jre-jammy (Debian-based, glibc) instead of jre-alpine, on purpose:
+# sqlite-jdbc ships native (non-Java) library files built against glibc,
+# and Alpine's musl libc can fail to load them with a cryptic linking
+# error. jammy costs a little more image size but sidesteps that entirely.
+FROM eclipse-temurin:21-jre-jammy
+
+WORKDIR /app
+
+# Running as root inside a container is unnecessary risk - if the app were
+# ever compromised, root inside the container makes escalation easier.
+# A dedicated, unprivileged user costs nothing and is standard practice.
+RUN groupadd -r moneyflow && useradd -r -g moneyflow moneyflow
+
+# Only the built jar crosses over from Stage 1 - none of the source code,
+# Maven cache, or build tools make it into the final image.
+COPY --from=build /app/target/*.jar app.jar
+
+# The SQLite file itself will live here, mounted in from outside the
+# container (via docker-compose, once we set that up) so it survives
+# container restarts and redeploys instead of vanishing with the container.
+RUN mkdir -p /app/data && chown -R moneyflow:moneyflow /app
+
+USER moneyflow
+
+EXPOSE 8080
+
+# MaxRAMPercentage lets the JVM size its heap relative to whatever memory
+# limit Docker actually gives this container, rather than a hardcoded -Xmx
+# that would silently need updating every time you resize the instance.
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=70.0", "-jar", "app.jar"]
