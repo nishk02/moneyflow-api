@@ -149,7 +149,7 @@ public class TransactionService {
                 ? "This transaction is dated before your account was " +
                 "set up (" + account.getCreatedAt().toLocalDate() + "). " +
                 "Your opening balance reflects your balance as of setup " +
-                "date — consider updating it if needed."
+                "date - consider updating it if needed."
                 : null;
 
         return new TransactionResult(response, warning);
