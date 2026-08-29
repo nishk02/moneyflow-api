@@ -1,0 +1,22 @@
+# Runs on the Lightsail VM. CI never builds here — it only pulls the image
+# GitHub Actions already built and pushed to GHCR (see build policy: no
+# local/VM builds, so amd64 vs arm64 never becomes a problem to juggle).
+services:
+  api:
+    image: ghcr.io/nishk02/moneyflow-api:latest
+    container_name: moneyflow-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      JWT_SECRET: ${JWT_SECRET}
+      DB_PATH: /app/data/moneyflow.db
+    volumes:
+      # Named volume, not a bind mount - Docker manages the storage location,
+      # and it survives `docker compose down` (only `-v` would remove it).
+      # This is also exactly what Litestream will watch once that's wired up.
+      - moneyflow-data:/app/data
+
+volumes:
+  moneyflow-data:
