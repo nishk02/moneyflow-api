@@ -39,4 +39,3 @@ build/
 
 ### App properties ###
 application-dev.properties
-application-prod.properties
