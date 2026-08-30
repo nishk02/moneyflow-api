@@ -39,3 +39,16 @@ build/
 
 ### App properties ###
 application-dev.properties
+
+### Bruno
+/bruno/**/Prod.yml
+
+# Security: Protect private keys and certificates
+*.pem
+*.key
+*.id_rsa
+*.pub
+
+# Security: Ignore local environment secrets
+.env
+.env.local
