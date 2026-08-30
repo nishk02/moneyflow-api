@@ -52,3 +52,6 @@ application-dev.properties
 # Security: Ignore local environment secrets
 .env
 .env.local
+
+### Personal/internal docs - never public ###
+docs/private/
