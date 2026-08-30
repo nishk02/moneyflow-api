@@ -92,19 +92,32 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: SSH in and roll the container over
-        uses: appleboy/ssh-action@v1
-        env:
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      - uses: actions/checkout@v4
+
+      - name: Copy compose + Caddy config to the VM
+        uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          envs: JWT_SECRET
+          source: "docker-compose.yml,Caddyfile"
+          target: ~/moneyflow-deploy
+
+      - name: SSH in and roll the containers over
+        uses: appleboy/ssh-action@v1
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          API_DOMAIN: ${{ secrets.API_DOMAIN }}
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          envs: JWT_SECRET,API_DOMAIN
           script: |
             cd ~/moneyflow-deploy
             set -e
             echo "JWT_SECRET=${JWT_SECRET}" > .env
+            echo "API_DOMAIN=${API_DOMAIN}" >> .env
             docker compose pull
             docker compose up -d
             docker image prune -f
