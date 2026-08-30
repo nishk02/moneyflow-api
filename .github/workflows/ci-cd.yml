@@ -94,6 +94,8 @@ jobs:
     steps:
       - name: SSH in and roll the container over
         uses: appleboy/ssh-action@v1
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
