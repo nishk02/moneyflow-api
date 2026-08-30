@@ -6,8 +6,8 @@ services:
     image: ghcr.io/nishk02/moneyflow-api:latest
     container_name: moneyflow-api
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     environment:
       SPRING_PROFILES_ACTIVE: prod
       JWT_SECRET: ${JWT_SECRET}
@@ -17,6 +17,23 @@ services:
       # and it survives `docker compose down` (only `-v` would remove it).
       # This is also exactly what Litestream will watch once that's wired up.
       - moneyflow-data:/app/data
+  caddy:
+    image: caddy:2-alpine
+    container_name: moneyflow-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
 
 volumes:
   moneyflow-data:
+  caddy-data:
+  caddy-config:
