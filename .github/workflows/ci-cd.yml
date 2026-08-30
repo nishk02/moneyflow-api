@@ -101,6 +101,7 @@ jobs:
           envs: JWT_SECRET
           script: |
             cd ~/moneyflow-deploy
+            set -e
             echo "JWT_SECRET=${JWT_SECRET}" > .env
             docker compose pull
             docker compose up -d
