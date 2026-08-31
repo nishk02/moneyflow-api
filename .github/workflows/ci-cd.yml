@@ -5,9 +5,9 @@ name: CI/CD
 # reaching production.
 on:
   push:
-    branches: ["**"]
+    branches: [ "**" ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 # Cancel an in-flight run for the same branch if a new commit lands - no
 # point finishing a build for code that's already been superseded.
@@ -94,13 +94,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Copy compose + Caddy config to the VM
+      - name: Copy compose + Caddy + Litestream config to the VM
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          source: "docker-compose.yml,Caddyfile"
+          source: "docker-compose.yml,Caddyfile,litestream.yml"
           target: ~/moneyflow-deploy
 
       - name: SSH in and roll the containers over
@@ -108,16 +108,24 @@ jobs:
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           API_DOMAIN: ${{ secrets.API_DOMAIN }}
+          LITESTREAM_BUCKET: ${{ secrets.LITESTREAM_BUCKET }}
+          LITESTREAM_ENDPOINT: ${{ secrets.LITESTREAM_ENDPOINT }}
+          LITESTREAM_ACCESS_KEY_ID: ${{ secrets.LITESTREAM_ACCESS_KEY_ID }}
+          LITESTREAM_SECRET_ACCESS_KEY: ${{ secrets.LITESTREAM_SECRET_ACCESS_KEY }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          envs: JWT_SECRET,API_DOMAIN
+          envs: JWT_SECRET,API_DOMAIN,LITESTREAM_BUCKET,LITESTREAM_ENDPOINT,LITESTREAM_ACCESS_KEY_ID,LITESTREAM_SECRET_ACCESS_KEY
           script: |
             cd ~/moneyflow-deploy
             set -e
             echo "JWT_SECRET=${JWT_SECRET}" > .env
             echo "API_DOMAIN=${API_DOMAIN}" >> .env
+            echo "LITESTREAM_BUCKET=${LITESTREAM_BUCKET}" >> .env
+            echo "LITESTREAM_ENDPOINT=${LITESTREAM_ENDPOINT}" >> .env
+            echo "LITESTREAM_ACCESS_KEY_ID=${LITESTREAM_ACCESS_KEY_ID}" >> .env
+            echo "LITESTREAM_SECRET_ACCESS_KEY=${LITESTREAM_SECRET_ACCESS_KEY}" >> .env
             docker compose pull
             docker compose up -d
             docker image prune -f
