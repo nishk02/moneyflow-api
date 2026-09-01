@@ -37,7 +37,7 @@ public class DevSecurityConfig {
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .exceptionHandling(exception -> exception.authenticationEntryPoint(jwtAuthEntryPoint))
                 .authorizeHttpRequests(auth ->
-                        auth.requestMatchers("/auth/**").permitAll().anyRequest().authenticated())
+                        auth.requestMatchers("/auth/**", "/error").permitAll().anyRequest().authenticated())
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
