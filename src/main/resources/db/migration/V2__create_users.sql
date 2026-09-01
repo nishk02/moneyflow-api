@@ -5,6 +5,7 @@ CREATE TABLE users
     last_name       TEXT        NOT NULL,
     email           TEXT        NOT NULL UNIQUE,
     password_hash   TEXT        NOT NULL,
+    role            TEXT        NOT NULL DEFAULT 'MEMBER',
     onboarding_step INTEGER     NOT NULL DEFAULT 0,
     created_at      TIMESTAMP   NOT NULL,
     updated_at      TIMESTAMP   NOT NULL

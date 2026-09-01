@@ -35,6 +35,9 @@ public class User {
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
+    @Column(nullable = false)
+    private String role = "MEMBER";
+
     @Column(name = "onboarding_step", nullable = false)
     private int onboardingStep = 0;
 
