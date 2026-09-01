@@ -55,3 +55,4 @@ application-dev.properties
 
 ### Personal/internal docs - never public ###
 docs/private/
+.DS_Store
