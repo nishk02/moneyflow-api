@@ -14,6 +14,11 @@ services:
       DB_PATH: /app/data/moneyflow.db
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      MAIL_HOST: ${MAIL_HOST}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
+      INVITE_SIGNUP_URL: ${INVITE_SIGNUP_URL}
     volumes:
       # Named volume, not a bind mount - Docker manages the storage location,
       # and it survives `docker compose down` (only `-v` would remove it).

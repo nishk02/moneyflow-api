@@ -114,11 +114,16 @@ jobs:
           LITESTREAM_SECRET_ACCESS_KEY: ${{ secrets.LITESTREAM_SECRET_ACCESS_KEY }}
           ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          INVITE_SIGNUP_URL: ${{ secrets.INVITE_SIGNUP_URL }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          envs: JWT_SECRET,API_DOMAIN,LITESTREAM_BUCKET,LITESTREAM_ENDPOINT,LITESTREAM_ACCESS_KEY_ID,LITESTREAM_SECRET_ACCESS_KEY,ADMIN_EMAIL,ADMIN_PASSWORD
+          envs: JWT_SECRET,API_DOMAIN,LITESTREAM_BUCKET,LITESTREAM_ENDPOINT,LITESTREAM_ACCESS_KEY_ID,LITESTREAM_SECRET_ACCESS_KEY,ADMIN_EMAIL,ADMIN_PASSWORD,MAIL_HOST,MAIL_USERNAME,MAIL_PASSWORD,MAIL_FROM,INVITE_SIGNUP_URL
           script: |
             cd ~/moneyflow-deploy
             set -e
@@ -130,6 +135,11 @@ jobs:
             echo "LITESTREAM_SECRET_ACCESS_KEY=${LITESTREAM_SECRET_ACCESS_KEY}" >> .env
             echo "ADMIN_EMAIL=${ADMIN_EMAIL}" >> .env
             echo "ADMIN_PASSWORD=${ADMIN_PASSWORD}" >> .env
+            echo "MAIL_HOST=${MAIL_HOST}" >> .env
+            echo "MAIL_USERNAME=${MAIL_USERNAME}" >> .env
+            echo "MAIL_PASSWORD=${MAIL_PASSWORD}" >> .env
+            echo "MAIL_FROM=${MAIL_FROM}" >> .env
+            echo "INVITE_SIGNUP_URL=${INVITE_SIGNUP_URL}" >> .env
             docker compose pull
             docker compose up -d
             docker image prune -f
