@@ -112,11 +112,13 @@ jobs:
           LITESTREAM_ENDPOINT: ${{ secrets.LITESTREAM_ENDPOINT }}
           LITESTREAM_ACCESS_KEY_ID: ${{ secrets.LITESTREAM_ACCESS_KEY_ID }}
           LITESTREAM_SECRET_ACCESS_KEY: ${{ secrets.LITESTREAM_SECRET_ACCESS_KEY }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          envs: JWT_SECRET,API_DOMAIN,LITESTREAM_BUCKET,LITESTREAM_ENDPOINT,LITESTREAM_ACCESS_KEY_ID,LITESTREAM_SECRET_ACCESS_KEY
+          envs: JWT_SECRET,API_DOMAIN,LITESTREAM_BUCKET,LITESTREAM_ENDPOINT,LITESTREAM_ACCESS_KEY_ID,LITESTREAM_SECRET_ACCESS_KEY,ADMIN_EMAIL,ADMIN_PASSWORD
           script: |
             cd ~/moneyflow-deploy
             set -e
@@ -126,6 +128,8 @@ jobs:
             echo "LITESTREAM_ENDPOINT=${LITESTREAM_ENDPOINT}" >> .env
             echo "LITESTREAM_ACCESS_KEY_ID=${LITESTREAM_ACCESS_KEY_ID}" >> .env
             echo "LITESTREAM_SECRET_ACCESS_KEY=${LITESTREAM_SECRET_ACCESS_KEY}" >> .env
+            echo "ADMIN_EMAIL=${ADMIN_EMAIL}" >> .env
+            echo "ADMIN_PASSWORD=${ADMIN_PASSWORD}" >> .env
             docker compose pull
             docker compose up -d
             docker image prune -f

@@ -12,6 +12,8 @@ services:
       SPRING_PROFILES_ACTIVE: prod
       JWT_SECRET: ${JWT_SECRET}
       DB_PATH: /app/data/moneyflow.db
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     volumes:
       # Named volume, not a bind mount - Docker manages the storage location,
       # and it survives `docker compose down` (only `-v` would remove it).
