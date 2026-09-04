@@ -2,6 +2,7 @@ package com.moneyflow.invite;
 
 import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
+import com.moneyflow.shared.email.EmailService;
 import com.moneyflow.shared.exception.ApiException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,6 +20,7 @@ public class InviteService {
 
     private final InviteRepository inviteRepository;
     private final UserRepository userRepository;
+    private final EmailService emailService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Value("${app.max-users:50}")
@@ -36,6 +38,7 @@ public class InviteService {
         invite.setExpiresAt(LocalDateTime.now().plusDays(VALIDITY_DAYS));
 
         Invite saved = inviteRepository.save(invite);
+        emailService.sendInviteEmail(saved.getEmail(), saved.getToken());
 
         long registeredMembers = userRepository.countByRole("MEMBER");
         String warning = registeredMembers >= maxUsers
