@@ -1,0 +1,21 @@
+info:
+  name: Invite Member
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/api/admin/invites"
+  body:
+    type: json
+    data: '{ "email": "not-an-email" }'
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
