@@ -23,7 +23,7 @@ public class EmailService {
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(fromAddress);
         message.setTo(toEmail);
-        message.setSubject("You're invited to Moneyflow");
+        message.setSubject("You're invited to MnyFlo");
         message.setText("""
                 You've been invited to MnyFlo.
 
