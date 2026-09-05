@@ -35,4 +35,20 @@ public class EmailService {
 
         mailSender.send(message);
     }
+
+    public void sendOtpEmail(String toEmail, String code) {
+        SimpleMailMessage message = new SimpleMailMessage();
+        message.setFrom(fromAddress);
+        message.setTo(toEmail);
+        message.setSubject("Your MnyFlo verification code");
+        message.setText("""
+                Your MnyFlo verification code is:
+
+                %s
+
+                This code expires in 10 minutes. If you didn't request this, you can ignore this email.
+                """.formatted(code));
+
+        mailSender.send(message);
+    }
 }

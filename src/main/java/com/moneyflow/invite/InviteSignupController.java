@@ -1,0 +1,52 @@
+package com.moneyflow.invite;
+
+import com.moneyflow.auth.AuthResponse;
+import com.moneyflow.shared.dto.ApiResponse;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * Public, unauthenticated endpoints for the invited person's side of the flow.
+ * Mounted under /auth/** so it rides the existing permitAll rule in
+ * (Admin-side invite creation lives separately in AdminInviteController,
+ * under /api/admin/invites, which does require a JWT + ADMIN role.)
+ */
+@RestController
+@RequestMapping("/auth/invites/{token}")
+@RequiredArgsConstructor
+public class InviteSignupController {
+    private final InviteService inviteService;
+
+    @PostMapping("/signup")
+    public ResponseEntity<ApiResponse<Void>> submitSignup(
+            @PathVariable String token,
+            @Valid @RequestBody InviteSignupRequest request
+    ) {
+        inviteService.submitSignup(token, request);
+
+        return ResponseEntity.ok(ApiResponse.success(null, "Verification code sent to your email"));
+    }
+
+    @PostMapping("/verify-otp")
+    public ResponseEntity<ApiResponse<AuthResponse>> verifyOtp(
+            @PathVariable String token,
+            @Valid @RequestBody VerifyOtpRequest request
+    ) {
+        AuthResponse response = inviteService.verifyOtp(token, request);
+
+        return ResponseEntity.ok(ApiResponse.success(response, "Account verified — welcome to MnyFlo"));
+    }
+
+    @PostMapping("/resend-otp")
+    public ResponseEntity<ApiResponse<Void>> resendOtp(@PathVariable String token) {
+        inviteService.resendOtp(token);
+
+        return ResponseEntity.ok(ApiResponse.success(null, "A new code has been sent to your email"));
+    }
+}

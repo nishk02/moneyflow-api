@@ -13,25 +13,6 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
 
-    public AuthResponse signUp(SignUpRequest request) {
-        if (userRepository.existsByEmail(request.email())) {
-            throw ApiException.conflict("Email is already registered");
-        }
-
-        User user = new User();
-
-        user.setFirstName(request.firstName());
-        user.setLastName(request.lastName());
-        user.setEmail(request.email());
-        user.setPasswordHash(passwordEncoder.encode(request.password()));
-
-        User savedUser = userRepository.save(user);
-
-        String token = jwtUtil.generateToken(savedUser.getId(), savedUser.getEmail(), savedUser.getRole());
-
-        return new AuthResponse(token, AuthResponse.UserSummary.from(savedUser));
-    }
-
     public AuthResponse signIn(SignInRequest request) {
         User user = userRepository.findByEmail(request.email())
                 .orElseThrow(() -> ApiException.unauthorized("Invalid email or password"));
