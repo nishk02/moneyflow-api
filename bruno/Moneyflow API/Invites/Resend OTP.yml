@@ -1,0 +1,16 @@
+info:
+  name: Resend OTP
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/auth/invites/{{INVITE_TOKEN}}/resend-otp"
+  auth:
+    type: none
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

@@ -1,24 +1,23 @@
 info:
-  name: Invite Member
+  name: Verify OTP
   type: http
-  seq: 1
+  seq: 3
 
 http:
   method: POST
-  url: "{{BASE_URL}}/api/admin/invites"
+  url: "{{BASE_URL}}/auth/invites/{{INVITE_TOKEN}}/verify-otp"
   body:
     type: json
-    data: '{ "email": "nishantsep2@gmail.com" }'
+    data: '{ "code": "123456" }'
   auth:
-    type: bearer
-    token: "{{AUTH_TOKEN}}"
+    type: none
 
 runtime:
   scripts:
     - type: after-response
       code: |-
         if (res.body.success && res.body.data && res.body.data.token) {
-          bru.setEnvVar("INVITE_TOKEN", res.body.data.token);
+          bru.setEnvVar("AUTH_TOKEN", res.body.data.token);
         }
 
 settings:
@@ -26,4 +25,3 @@ settings:
   timeout: 0
   followRedirects: true
   maxRedirects: 5
-  forwardAuthorizationHeader: false

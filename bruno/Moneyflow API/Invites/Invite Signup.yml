@@ -1,0 +1,25 @@
+info:
+  name: Invite Signup
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{BASE_URL}}/auth/invites/{{INVITE_TOKEN}}/signup"
+  body:
+    type: json
+    data: |-
+      {
+        "firstName": "Nishant",
+        "lastName": "Kumar",
+        "password": "SecurePass123",
+        "confirmPassword": "SecurePass123"
+      }
+  auth:
+    type: none
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
