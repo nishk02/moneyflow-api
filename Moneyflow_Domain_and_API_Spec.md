@@ -1,5 +1,5 @@
 # Moneyflow — Domain Model & API Contract Specification
-**Version:** 1.3.0  
+**Version:** 1.4.0  
 **Derived from:** Figma screens (39 pages), Excel cashflow template (FY24-25), User journey map  
 **Purpose:** Complete build specification before writing any Java code  
 **Architecture:** Modular monolith · Spring Boot 3 · SQLite · Financial year April–March
@@ -11,6 +11,7 @@
 | 1.1.0 | Removed income profiling wizard. Income tracked naturally via transactions. Simplified UserProfile to preferences only. Removed OtherIncome entity. |
 | 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
 | 1.3.0 | Transactions API hardened (pagination, sort, flowType filter, PUT scope, smart-skip month navigation, available-periods picker); TRANSFER/goal reversal made fully symmetric; three new business rules (BR-15/16/17); Accounts gained `goalLinked`; Categories gained `isInternal`; Dashboard `balancePercentage`/`savedThisMonth` corrected. Full breakdown below. |
+| 1.4.0 | Onboarding is now invite-only (BR-18). `POST /auth/signup` removed; `ADMIN` invites a `MEMBER` by email, who verifies via a 6-digit OTP before their `User` is created. |
 
 <details>
 <summary><strong>1.3.0 detailed changes</strong> (click to expand)</summary>
@@ -347,6 +348,38 @@ The 10 key metrics per month, computed from transactions and cached for performa
 
 ---
 
+### 3.11 Invite
+
+Derived from: invite-only onboarding decision (v1.4.0) — replaces open self-registration.
+
+An `Invite` is a short-lived state machine, not a permanent record like the entities above: it exists only to carry a new person from "an admin typed their email" to "a verified `User` row exists," then keeps its shell around (with secrets cleared) as a completed audit trail.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `email` | String | The address the admin invited |
+| `token` | String | Unique, unguessable (32 random bytes, URL-safe base64) — the invite link's identity, not a JWT |
+| `status` | Enum | `PENDING` → `AWAITING_OTP` → `COMPLETED`, see below |
+| `invitedBy` | UUID | FK to User (the admin) |
+| `expiresAt` | LocalDateTime | 7 days from creation |
+| `pendingFirstName` | String | Staged, not on a real `User` until OTP verifies |
+| `pendingLastName` | String | Staged, not on a real `User` until OTP verifies |
+| `pendingPasswordHash` | String | Staged, BCrypt hashed; cleared once the `User` is created |
+| `otpCodeHash` | String | BCrypt hashed 6-digit code; cleared once the `User` is created |
+| `otpExpiresAt` | LocalDateTime | 10 minutes from issue |
+| `otpAttempts` | Integer | Resets to 0 on each new code; capped at 5 before a resend is required |
+| `createdAt` | LocalDateTime | |
+| `updatedAt` | LocalDateTime | Doubles as the resend-cooldown anchor — see BR-18 |
+
+**Status transitions:**
+- `PENDING` — invite created and emailed, nobody has clicked through yet.
+- `AWAITING_OTP` — the invited person submitted their name/password; a code has been emailed and is awaiting verification.
+- `COMPLETED` — OTP verified, `User` created, staged secrets cleared. Terminal.
+
+See BR-18 for the full onboarding/OTP business rules.
+
+---
+
 ## 4. Database Schema (SQLite)
 
 ### SQLite type notes:
@@ -367,9 +400,31 @@ CREATE TABLE users (
     last_name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'MEMBER',
     onboarding_step INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+-- ============================================================
+-- INVITES (invite-only onboarding — see spec §3.11, BR-18)
+-- ============================================================
+CREATE TABLE invites (
+    id                     TEXT      NOT NULL PRIMARY KEY,
+    email                  TEXT      NOT NULL,
+    token                  TEXT      NOT NULL UNIQUE,
+    status                 TEXT      NOT NULL DEFAULT 'PENDING'
+                               CHECK(status IN ('PENDING','AWAITING_OTP','COMPLETED')),
+    invited_by             TEXT      NOT NULL REFERENCES users(id),
+    expires_at             TIMESTAMP NOT NULL,
+    pending_first_name     TEXT,
+    pending_last_name      TEXT,
+    pending_password_hash  TEXT,
+    otp_code_hash          TEXT,
+    otp_expires_at         TIMESTAMP,
+    otp_attempts           INTEGER   NOT NULL DEFAULT 0,
+    created_at             TIMESTAMP NOT NULL,
+    updated_at             TIMESTAMP NOT NULL
 );
 
 -- ============================================================
@@ -572,14 +627,26 @@ CREATE INDEX idx_month_summaries_lookup
 ```
 com.moneyflow
 ├── auth/
-│   ├── AuthController.java
+│   ├── AuthController.java           signin only — see invite/ for onboarding
 │   ├── AuthService.java
-│   ├── JwtUtil.java
-│   ├── dto/
-│   │   ├── SignUpRequest.java
-│   │   ├── SignInRequest.java
-│   │   └── AuthResponse.java
+│   ├── AdminBootstrapRunner.java     Seeds the first ADMIN from env vars at startup
+│   ├── SignInRequest.java
+│   ├── AuthResponse.java
+│   ├── UserRepository.java
 │   └── User.java                     @Entity
+│
+├── invite/                           Invite-only onboarding (replaces open signup, v1.4.0)
+│   ├── AdminInviteController.java    POST /api/admin/invites — JWT + ADMIN only
+│   ├── InviteSignupController.java   POST /auth/invites/{token}/** — public
+│   ├── InviteService.java            Token generation, OTP issue/verify/resend
+│   ├── InviteRepository.java
+│   ├── CreateInviteRequest.java
+│   ├── InviteSignupRequest.java
+│   ├── VerifyOtpRequest.java
+│   ├── InviteResponse.java
+│   ├── InviteResult.java
+│   ├── InviteStatus.java             Enum: PENDING, AWAITING_OTP, COMPLETED
+│   └── Invite.java                   @Entity
 │
 ├── account/
 │   ├── AccountController.java
@@ -650,13 +717,17 @@ com.moneyflow
 │
 └── shared/
     ├── security/
-    │   ├── SecurityConfig.java
+    │   ├── ProdSecurityConfig.java / DevSecurityConfig.java
+    │   ├── JwtUtil.java
     │   ├── JwtAuthFilter.java
-    │   └── UserDetailsServiceImpl.java
+    │   ├── JwtAuthEntryPoint.java
+    │   ├── CorsConfig.java
+    │   └── BaseController.java
+    ├── email/
+    │   └── EmailService.java         Invite + OTP emails (Brevo SMTP)
     ├── exception/
     │   ├── GlobalExceptionHandler.java
-    │   ├── ApiException.java
-    │   └── ErrorCode.java
+    │   └── ApiException.java
     ├── dto/
     │   └── ApiResponse.java          Standard envelope for all responses
     └── util/
@@ -700,36 +771,78 @@ All endpoints require `Authorization: Bearer {jwt}` except `/auth/**`.
 
 ### Auth
 
-#### POST /auth/signup
-```json
-{
-  "firstName": "Nishant",
-  "lastName": "Sharma",
-  "email": "nishant@example.com",
-  "password": "SecurePass123!",
-  "confirmPassword": "SecurePass123!"
-}
-```
-**Response 201:**
-```json
-{
-  "data": {
-    "token": "eyJhbGci...",
-    "user": { "id": "uuid", "firstName": "Nishant", "email": "nishant@example.com", "onboardingStep": 0 }
-  }
-}
-```
-Validations: email unique · password min 8 chars + mixed case + digit · passwords match  
-Side effect: creates `UserProfile` record with defaults
-
----
+Self-registration is invite-only — there is no public "create an account" endpoint. A new `User` only ever comes into existence via the **Invites** flow below (or, for the very first account, `AdminBootstrapRunner` at startup). `/auth/**` stays fully `permitAll` even though it now covers the invite-acceptance endpoints too, since every step of that flow happens before the person has a JWT to present.
 
 #### POST /auth/signin
 ```json
 { "email": "nishant@example.com", "password": "SecurePass123!" }
 ```
-**Response 200:** same shape as signup  
+**Response 200:** same shape as the invite `verify-otp` response below
 **401:** `INVALID_CREDENTIALS` — returned identically whether the email doesn't exist or the password is wrong. This is deliberate: a login endpoint that distinguishes "no such user" from "wrong password" via status code or message lets an anonymous caller enumerate registered emails. Both failure modes must be indistinguishable to the caller.
+
+---
+
+### Invites
+
+How a new `User` actually gets created. Three steps: an admin vouches for an email, the invited person proves their name/password intent, then proves they own the inbox via a 6-digit code. See BR-18 for the full rule set.
+
+#### POST /api/admin/invites — requires JWT + `ADMIN` role
+```json
+{ "email": "newmember@example.com" }
+```
+**Response 201:** the created invite (token included so it can be resent manually if the email bounces)
+```json
+{
+  "data": {
+    "id": "uuid",
+    "email": "newmember@example.com",
+    "token": "opaque-url-safe-token",
+    "status": "PENDING",
+    "expiresAt": "2026-09-12T10:00:00"
+  }
+}
+```
+An invite-email is sent immediately. If the workspace is already at or past `app.max-users`, the invite is still created (response carries a `warning` field) — the hard limit is enforced later, at OTP verification, not here (BR-18).
+
+---
+
+#### POST /auth/invites/{token}/signup — public
+The invited person's first step after opening the emailed link — stages their details and triggers the OTP email. Does **not** create a `User` yet.
+```json
+{
+  "firstName": "Nishant",
+  "lastName": "Kumar",
+  "password": "SecurePass123!",
+  "confirmPassword": "SecurePass123!"
+}
+```
+**Response 200:** `{ "message": "Verification code sent to your email" }` — no token, no user object, because neither exists yet.
+
+---
+
+#### POST /auth/invites/{token}/verify-otp — public
+```json
+{ "code": "482913" }
+```
+**Response 200:** the `User` is created on success — same shape as `/auth/signin`
+```json
+{
+  "data": {
+    "token": "eyJhbGci...",
+    "user": { "id": "uuid", "firstName": "Nishant", "lastName": "Kumar", "email": "newmember@example.com", "onboardingStep": 0 }
+  }
+}
+```
+**401:** incorrect code (attempt counted toward the 5-try cap)
+**400:** code expired, too many incorrect attempts, or invite expired
+**409:** the workspace's `app.max-users` cap has been reached since the invite was created
+
+---
+
+#### POST /auth/invites/{token}/resend-otp — public
+No body. Issues a fresh code and resets the attempt counter. Rate-limited to one call per 60 seconds per invite (BR-18).
+**Response 200:** `{ "message": "A new code has been sent to your email" }`
+**400:** invite not awaiting a code, invite expired, or still inside the cooldown window
 
 ---
 
@@ -1440,6 +1553,19 @@ A category with `isInternal = true` (currently just `Opening Balance`, `cat-35`)
 
 **Why this exists:** without it, a client could tag an ordinary expense with `Opening Balance`'s category ID, which would silently count that expense as opening-balance inflow in Dashboard's `balancePercentage` calculation (§6) — corrupting a metric that's supposed to reflect real onboarding funding, not an arbitrary transaction a user (or a bug) happened to mislabel.
 
+### BR-18: Invite-Based Onboarding & OTP Security
+Replaces open self-registration entirely (`POST /auth/signup` removed, v1.4.0). A new `User` is created in exactly two ways: `AdminBootstrapRunner` seeds the first `ADMIN` from env vars at startup (solving the chicken-and-egg problem of nobody existing yet to send the first invite), and every subsequent `User` is `MEMBER`, created only through this flow.
+
+**The three-step state machine:** `PENDING` (admin created the invite, email sent) → `AWAITING_OTP` (invited person submitted name/password, code sent) → `COMPLETED` (code verified, `User` created). The `User` row does not exist until the final step — `pendingFirstName`/`pendingLastName`/`pendingPasswordHash` hold the staged details in the interim, cleared the instant they're promoted to a real `User`.
+
+**OTP is treated exactly like a password, not like a lesser secret:** the 6-digit code is BCrypt-hashed with the same `PasswordEncoder` bean before storage (`otpCodeHash`) — never stored or logged in plaintext. Expires after 10 minutes. Capped at 5 incorrect attempts, after which the invite requires a fresh code via resend rather than being permanently killed — the invite itself stays valid for its full 7-day window regardless of how many codes have been burned.
+
+**Resend cooldown without a schema change:** rather than adding a dedicated "last sent" column, the 60-second cooldown is derived from the `Invite` entity's existing `updatedAt` (auto-maintained by `@LastModifiedDate`) — one fewer migration, one fewer thing that can drift out of sync with reality.
+
+**The user cap is enforced at verification, not at invite creation:** `POST /api/admin/invites` only warns if `app.max-users` is already reached — it doesn't block, since an admin may legitimately want to queue invites while deciding who to remove. The real gate is in `verifyOtp`: `userRepository.countByRole("MEMBER") >= maxUsers` is checked immediately before creating the `User`, deliberately ahead of the OTP-match check itself, so a workspace that's full rejects cleanly regardless of whether the code is correct — and so a correct code is never wasted against `MAX_OTP_ATTEMPTS` for a reason unrelated to the code being wrong. First-to-verify wins over first-to-click-the-link if two invited people race past the cap.
+
+**Why `/auth/invites/{token}/**` sits under `/auth/**` rather than its own permitted path:** every step of this flow happens before the invited person has a JWT, so it must ride the same `permitAll` rule `/auth/signin` already uses — no separate Spring Security exemption to maintain in parallel.
+
 ---
 
 ## 10. Screens-to-API Mapping
@@ -1447,7 +1573,7 @@ A category with `isInternal = true` (currently just `Opening Balance`, `cat-35`)
 | Screen (Figma page) | API calls made |
 |---|---|
 | Splash / Onboarding (p2–3) | None |
-| Sign Up (p4) | `POST /auth/signup` |
+| Sign Up (p4) | `POST /auth/invites/{token}/signup` → `POST /auth/invites/{token}/verify-otp` (invite-only, see §6 Invites) |
 | Sign In (p5) | `POST /auth/signin` |
 | Get Started — step 1 (p6) | `GET /accounts` |
 | Get Started — step 2 (p7) | `GET /planned-amounts` |
@@ -1494,8 +1620,8 @@ These items are consciously not part of the current MVP build. Listed here so re
 
 ---
 
-*Moneyflow Domain Model & API Contract — v1.3.0*
-*Backend MVP complete: auth, accounts, transactions, goals, dashboard, analytics.*
+*Moneyflow Domain Model & API Contract — v1.4.0*
+*Backend MVP complete: auth (invite-only), accounts, transactions, goals, dashboard, analytics.*
 *PlannedAmount module, LLM insights, MonthSummary computation, yearly analytics — all Phase 2.*
 *Analytics query model: mode/anchor (MONTHLY/WEEKLY) + CUSTOM from/to date range. Analytics module finalised: 4 cards (Income, Expense, Savings+rate, Debt Ratio). Balance card removed — account balance belongs on Dashboard, not in period-filtered cashflow view. Monthly breakdown deferred to Phase 2.*
 *Transaction date vs. entry date distinction documented (§3.6): date = when money moved, createdAt = when logged. No speculative computed fields added (loggedLate removed — no screen consumer, not built speculatively).*
@@ -1519,4 +1645,5 @@ These items are consciously not part of the current MVP build. Listed here so re
 *Dashboard balancePercentage extended to add this month's Opening-Balance-categorized SETTLEMENT total to the denominator (previously totalIncomeThisMonth alone, which read as a false 0%/critical on onboarding day before any INCOME transaction existed) and now returns null instead of 0 when the denominator is zero — null meaning "not enough data," distinct from the low/red display band. savedThisMonth corrected to sum only TRANSFER rows with toGoalId set — a plain account-to-account transfer no longer inflates it. BR-02's balance-adjustment notes now format both amounts through stripTrailingZeros().toPlainString() so they never show mismatched decimal precision on one side.*
 *GET /transactions month-navigation hints replaced: hasPreviousMonthData/hasNextMonthData (booleans, adjacent-month-only) → previousPeriod/nextPeriod (resolved period objects, or null). Root cause: BR-13 backdating can leave empty months between "now" and an older backdated entry, and the boolean check only ever looked at the literally-adjacent month — the arrow would disable at the first empty month, permanently hiding real data beyond it. The new fields resolve to the nearest period that actually has data, skipping gaps automatically; calendar lens does this via a single indexed date-range query, FY lens via a bounded (24-step) walk through FinancialYearUtil.previous/next to avoid guessing which century a two-digit FY label belongs to. The now-unused PeriodFilter record and resolvePeriod method were removed as part of this change; the previously-dead hasData helper is now used by the FY-lens walk. cat-35's icon changed 🏁 → 🏛️. Verified integrated on the frontend.*
 *New GET /transactions/available-periods: returns every year and month (calendar lens only) that has at least one transaction, powering a year-based month picker as a companion to the smart-skip arrows — for genuinely distant backdating where even a smart-skip arrow means several clicks. Deliberately returns the full years+months structure in one response rather than a per-year `?year=` param, since total data volume is small for a single-user app; "default to current year" is left to the frontend, which already knows what year "today" is.*
+*v1.4.0: Onboarding is invite-only now — see BR-18.*
 *Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
