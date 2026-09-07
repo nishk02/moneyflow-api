@@ -5,15 +5,12 @@ import com.moneyflow.shared.dto.ApiResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 /**
  * Public, unauthenticated endpoints for the invited person's side of the flow.
  * Mounted under /auth/** so it rides the existing permitAll rule in
+ * ProdSecurityConfig/DevSecurityConfig — no security config change needed.
  * (Admin-side invite creation lives separately in AdminInviteController,
  * under /api/admin/invites, which does require a JWT + ADMIN role.)
  */
@@ -22,6 +19,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class InviteSignupController {
     private final InviteService inviteService;
+
+    @GetMapping
+    public ResponseEntity<ApiResponse<InviteResponse>> getInviteInfo(@PathVariable String token) {
+        InviteResponse response = inviteService.getInviteInfo(token);
+
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
 
     @PostMapping("/signup")
     public ResponseEntity<ApiResponse<Void>> submitSignup(

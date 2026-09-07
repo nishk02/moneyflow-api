@@ -784,7 +784,7 @@ Self-registration is invite-only — there is no public "create an account" endp
 
 ### Invites
 
-How a new `User` actually gets created. Three steps: an admin vouches for an email, the invited person proves their name/password intent, then proves they own the inbox via a 6-digit code. See BR-18 for the full rule set.
+How a new `User` actually gets created. Three steps: an admin vouches for an email, the invited person proves their name/password intent, then proves they own the inbox via a 6-digit code. A read-only lookup sits alongside these so the frontend can confirm the invited email before any of that starts. See BR-18 for the full rule set.
 
 #### POST /api/admin/invites — requires JWT + `ADMIN` role
 ```json
@@ -803,6 +803,26 @@ How a new `User` actually gets created. Three steps: an admin vouches for an ema
 }
 ```
 An invite-email is sent immediately. If the workspace is already at or past `app.max-users`, the invite is still created (response carries a `warning` field) — the hard limit is enforced later, at OTP verification, not here (BR-18).
+
+---
+
+#### GET /auth/invites/{token} — public
+Lets the frontend show "you're registering as `{email}`" before the person types anything, and lets it distinguish an already-used or expired invite from a fresh one without guessing from a generic error.
+**Response 200:**
+```json
+{
+  "data": {
+    "id": "uuid",
+    "email": "newmember@example.com",
+    "token": "opaque-url-safe-token",
+    "status": "PENDING",
+    "expiresAt": "2026-09-12T10:00:00"
+  }
+}
+```
+Same response shape as invite creation above — deliberately reuses `InviteResponse` rather than a second DTO. Safe to leave unauthenticated for the same reason `signup`/`verify-otp`/`resend-otp` are: the token itself (32 random bytes) is the access control, and whoever has it already received it via an email addressed to them — this endpoint reveals nothing they don't already implicitly know.
+**400:** invite expired (same as the other invite endpoints — see BR-18)
+**404:** token doesn't exist
 
 ---
 
@@ -1566,6 +1586,8 @@ Replaces open self-registration entirely (`POST /auth/signup` removed, v1.4.0). 
 
 **Why `/auth/invites/{token}/**` sits under `/auth/**` rather than its own permitted path:** every step of this flow happens before the invited person has a JWT, so it must ride the same `permitAll` rule `/auth/signin` already uses — no separate Spring Security exemption to maintain in parallel.
 
+**Why `GET /auth/invites/{token}` is safe to leave unauthenticated and un-rate-limited, unlike `verify-otp`:** a 6-digit OTP has only a million possible values, which is exactly why it's capped at 5 attempts (above) — but the invite token itself is 32 random bytes, effectively unguessable within any practical timeframe. Knowing the token is already equivalent to having received the invite email; the lookup adds no new way to find or confirm a token, it only reveals the email tied to one you already hold.
+
 ---
 
 ## 10. Screens-to-API Mapping
@@ -1573,7 +1595,7 @@ Replaces open self-registration entirely (`POST /auth/signup` removed, v1.4.0). 
 | Screen (Figma page) | API calls made |
 |---|---|
 | Splash / Onboarding (p2–3) | None |
-| Sign Up (p4) | `POST /auth/invites/{token}/signup` → `POST /auth/invites/{token}/verify-otp` (invite-only, see §6 Invites) |
+| Sign Up (p4) | `GET /auth/invites/{token}` → `POST /auth/invites/{token}/signup` → `POST /auth/invites/{token}/verify-otp` (invite-only, see §6 Invites) |
 | Sign In (p5) | `POST /auth/signin` |
 | Get Started — step 1 (p6) | `GET /accounts` |
 | Get Started — step 2 (p7) | `GET /planned-amounts` |

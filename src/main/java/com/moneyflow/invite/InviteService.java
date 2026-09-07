@@ -81,6 +81,13 @@ public class InviteService {
         inviteRepository.save(invite);
     }
 
+    public InviteResponse getInviteInfo(String token) {
+        Invite invite = getInviteOrThrow(token);
+        requireNotExpired(invite);
+
+        return InviteResponse.from(invite);
+    }
+
     /**
      * Step 2: the invited person submits the 6-digit code from their inbox.
      * On success this is the moment the real User row is finally created.
