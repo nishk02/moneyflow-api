@@ -34,6 +34,7 @@ public class TransactionService {
     private final UserRepository userRepository;
     private final CategoryRepository categoryRepository;
     private final GoalRepository goalRepository;
+    private final GoalAllocationService goalAllocationService;
 
     private static final Set<String> SORTABLE_PROPERTIES = Set.of("date", "amount", "createdAt");
 
@@ -56,8 +57,13 @@ public class TransactionService {
                 calendarYear, calendarMonth, financialYear, financialMonth);
         Specification<Transaction> spec = combine(userId, currentSpec, flowType);
 
-        Page<TransactionResponse> page = transactionRepository.findAll(spec, stablePageable)
-                .map(TransactionResponse::from);
+        Page<Transaction> transactionPage = transactionRepository.findAll(spec, stablePageable);
+        Map<String, List<TransactionGoalAllocation>> allocationsByTransactionId = goalAllocationService
+                .getAllocationEntitiesByTransactionIds(
+                        transactionPage.getContent().stream().map(Transaction::getId).toList());
+
+        Page<TransactionResponse> page = transactionPage.map(t ->
+                TransactionResponse.from(t, allocationsByTransactionId.getOrDefault(t.getId(), List.of())));
 
         boolean calendarFilterActive = calendarYear != null && calendarMonth != null;
         boolean financialFilterActive = financialYear != null && financialMonth != null;
@@ -79,9 +85,9 @@ public class TransactionService {
 
     @Transactional(readOnly = true)
     public TransactionResponse getTransaction(String userId, String id) {
-        return transactionRepository.findByIdAndUserId(id, userId)
-                .map(TransactionResponse::from)
+        Transaction transaction = transactionRepository.findByIdAndUserId(id, userId)
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
+        return TransactionResponse.from(transaction, goalAllocationService.getAllocationEntities(transaction));
     }
 
     // TransactionService.java
@@ -132,16 +138,20 @@ public class TransactionService {
 
         Transaction transaction = buildTransaction(user, account, category, toAccount, request);
 
+        guardWithdrawalAllocation(account, request.type(), request.toGoalId(), request.amount(), request.goalAllocations());
+
         applyBalanceEffect(transaction, account, toAccount, request.amount());
 
         accountRepository.save(account);
         if (toAccount != null) accountRepository.save(toAccount);
 
-        // BR-07: update goal progress when TRANSFER targets a goal
-        applyGoalProgress(transaction, userId);
-
         Transaction saved = transactionRepository.save(transaction);
-        TransactionResponse response = TransactionResponse.from(saved);
+
+        // BR-07: update goal progress when TRANSFER targets a goal, or draws down goal(s) on withdrawal
+        applyGoalProgress(transaction, request.goalAllocations());
+
+        TransactionResponse response = TransactionResponse
+                .from(saved, goalAllocationService.getAllocationEntities(saved));
 
         // Only warn if backdated more than 7 days before account setup
         LocalDate setupDate = account.getCreatedAt().toLocalDate();
@@ -156,7 +166,7 @@ public class TransactionService {
     }
 
     @Transactional
-    public TransactionResponse updateTransaction(String userId, String id, UpdateTransactionRequest request) {
+    public TransactionResult updateTransaction(String userId, String id, UpdateTransactionRequest request) {
         Transaction transaction = transactionRepository
                 .findByIdAndUserId(id, userId)
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
@@ -164,8 +174,10 @@ public class TransactionService {
         Account account = transaction.getAccount();
         Account toAccount = transaction.getToAccount();
 
+        List<GoalAllocationItem> existingAllocations = goalAllocationService.getExistingAllocations(transaction);
+
         reverseBalanceEffect(transaction, account, toAccount);
-        reverseGoalProgress(transaction, userId);
+        reverseGoalProgress(transaction);
 
         if (request.amount() != null) transaction.setAmount(request.amount());
         if (request.date() != null) {
@@ -186,14 +198,26 @@ public class TransactionService {
             transaction.setNotes(request.notes());
         }
 
+        AllocationResolution resolution = resolveEffectiveGoalAllocations(
+                account, transaction.getType(), transaction.getToGoalId(),
+                transaction.getAmount(), request.goalAllocations(), existingAllocations);
+
+        guardWithdrawalAllocation(
+                account, transaction.getType(), transaction.getToGoalId(),
+                transaction.getAmount(), resolution.allocations());
+
         applyBalanceEffect(transaction, account, toAccount, transaction.getAmount());
-        applyGoalProgress(transaction, userId);
 
         accountRepository.save(account);
         if (toAccount != null) accountRepository.save(toAccount);
 
         Transaction saved = transactionRepository.save(transaction);
-        return TransactionResponse.from(saved);
+
+        applyGoalProgress(saved, resolution.allocations());
+
+        TransactionResponse response = TransactionResponse.from(saved, goalAllocationService.getAllocationEntities(saved));
+
+        return new TransactionResult(response, resolution.droppedAllocationWarning());
     }
 
     @Transactional
@@ -207,7 +231,7 @@ public class TransactionService {
 
         reverseBalanceEffect(transaction, account, toAccount);
         // BR-07: reverse goal progress on delete
-        reverseGoalProgress(transaction, userId);
+        reverseGoalProgress(transaction);
 
         accountRepository.save(account);
         if (toAccount != null) accountRepository.save(toAccount);
@@ -362,30 +386,39 @@ public class TransactionService {
         }
     }
 
-    private void reverseGoalProgress(Transaction transaction, String userId) {
-        if (transaction.getType() != TransactionType.TRANSFER) return;
+    private void guardWithdrawalAllocation(
+            Account account, TransactionType type, String toGoalId,
+            BigDecimal amount, List<GoalAllocationItem> goalAllocations) {
+        if (type != TransactionType.TRANSFER || toGoalId != null) return;
 
-        if (transaction.getToGoalId() != null) {
-            goalRepository.findByIdAndUserId(transaction.getToGoalId(), userId)
-                    .ifPresent(goal -> {
-                        goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
-                        goalRepository.save(goal);
-                    });
+        if (goalAllocations == null || goalAllocations.isEmpty()) {
+            goalAllocationService.requireSufficientFreeBalance(account, amount);
             return;
         }
 
-        goalRepository.findByAccountIdAndActiveTrueAndStatusNot(transaction.getAccount().getId(), "COMPLETED")
-                .ifPresent(goal -> {
-                    goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
-                    goalRepository.save(goal);
-                });
+        BigDecimal allocatedToGoals = goalAllocations.stream()
+                .map(GoalAllocationItem::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (allocatedToGoals.compareTo(amount) > 0) {
+            throw ApiException.badRequest("Goal allocations cannot exceed the transfer amount.");
+        }
+
+        BigDecimal remainderFromFreeBalance = amount.subtract(allocatedToGoals);
+        BigDecimal freeBalance = goalAllocationService.getFreeBalance(account);
+
+        if (remainderFromFreeBalance.compareTo(freeBalance) > 0) {
+            throw ApiException.badRequest(
+                    "The portion not covered by your goal selections (₹" + remainderFromFreeBalance +
+                            ") exceeds this account's free balance (₹" + freeBalance + ").");
+        }
     }
 
-    private void applyGoalProgress(Transaction transaction, String userId) {
+    private void applyGoalProgress(Transaction transaction, List<GoalAllocationItem> goalAllocations) {
         if (transaction.getType() != TransactionType.TRANSFER) return;
 
         if (transaction.getToGoalId() != null) {
-            goalRepository.findByIdAndUserId(transaction.getToGoalId(), userId)
+            goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
                         goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
                         goalRepository.save(goal);
@@ -393,11 +426,22 @@ public class TransactionService {
             return;
         }
 
-        goalRepository.findByAccountIdAndActiveTrueAndStatusNot(transaction.getAccount().getId(), "COMPLETED")
-                .ifPresent(goal -> {
-                    goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
-                    goalRepository.save(goal);
-                });
+        goalAllocationService.applyAllocations(transaction, goalAllocations, GoalAllocationDirection.DECREASE);
+    }
+
+    private void reverseGoalProgress(Transaction transaction) {
+        if (transaction.getType() != TransactionType.TRANSFER) return;
+
+        if (transaction.getToGoalId() != null) {
+            goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
+                    .ifPresent(goal -> {
+                        goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
+                        goalRepository.save(goal);
+                    });
+            return;
+        }
+
+        goalAllocationService.reverseAllocations(transaction, GoalAllocationDirection.DECREASE);
     }
 
     private boolean isGoalProtectedType(TransactionType type) {
@@ -490,5 +534,60 @@ public class TransactionService {
         Specification<Transaction> spec = combine(userId, directionSpec, flowType);
         Pageable top1 = PageRequest.of(0, 1, Sort.by(order, "date"));
         return transactionRepository.findAll(spec, top1).stream().findFirst().orElse(null);
+    }
+
+    private record AllocationResolution(List<GoalAllocationItem> allocations, String droppedAllocationWarning) {
+    }
+
+    private AllocationResolution resolveEffectiveGoalAllocations(
+            Account account, TransactionType type, String toGoalId, BigDecimal newAmount,
+            List<GoalAllocationItem> requestedAllocations, List<GoalAllocationItem> existingAllocations) {
+
+        if (requestedAllocations != null) {
+            return new AllocationResolution(requestedAllocations, null);
+        }
+
+        if (existingAllocations.isEmpty()) {
+            return new AllocationResolution(existingAllocations, null);
+        }
+
+        if (fitsWithoutError(account, type, toGoalId, newAmount, existingAllocations)) {
+            return new AllocationResolution(existingAllocations, null);
+        }
+
+        if (newAmount.compareTo(goalAllocationService.getFreeBalance(account)) <= 0) {
+            BigDecimal oldTotal = existingAllocations.stream()
+                    .map(GoalAllocationItem::amount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            String goalNames = existingAllocations.stream()
+                    .map(a -> goalRepository.findById(a.goalId()).map(Goal::getName).orElse("a goal"))
+                    .distinct()
+                    .reduce((a, b) -> a + " and " + b)
+                    .orElse("a goal");
+
+            String warning = "This transfer previously used ₹" + oldTotal + " from " + goalNames +
+                    ". Since the new amount (₹" + newAmount + ") fits within your account's available balance, " +
+                    "that money has been returned and this transfer no longer draws from it.";
+
+            return new AllocationResolution(List.of(), warning);
+        }
+
+        // Neither the old breakdown nor free balance alone covers it — let the guard below
+        // throw its normal, precise error asking the client to resupply an explicit breakdown.
+        return new AllocationResolution(existingAllocations, null);
+    }
+
+    private boolean fitsWithoutError(
+            Account account,
+            TransactionType type,
+            String toGoalId,
+            BigDecimal amount,
+            List<GoalAllocationItem> allocations) {
+        try {
+            guardWithdrawalAllocation(account, type, toGoalId, amount, allocations);
+            return true;
+        } catch (ApiException e) {
+            return false;
+        }
     }
 }

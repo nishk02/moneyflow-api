@@ -9,9 +9,7 @@ import com.moneyflow.category.Category;
 import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.exception.ApiException;
-import com.moneyflow.transaction.TransactionRepository;
-import com.moneyflow.transaction.TransactionResponse;
-import com.moneyflow.transaction.TransactionType;
+import com.moneyflow.transaction.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +18,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -31,6 +30,7 @@ public class DashboardService {
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
     private final GoalRepository goalRepository;
+    private final GoalAllocationService goalAllocationService;
 
     private static final List<String> MOTIVATIONAL_QUOTES = List.of(
             "Savings is a Habit. Keeping track is the Key.",
@@ -103,10 +103,15 @@ public class DashboardService {
         String savingsMessage = buildSavingsMessage(savedThisMonth, monthlyTarget, totalBalance);
 
         // Last entries
-        List<TransactionResponse> lastEntries = transactionRepository
-                .findTop5ByUserIdOrderByDateDescCreatedAtDesc(userId)
-                .stream()
-                .map(TransactionResponse::from)
+        List<Transaction> recentTransactions = transactionRepository
+                .findTop5ByUserIdOrderByDateDescCreatedAtDesc(userId);
+
+        Map<String, List<TransactionGoalAllocation>> allocationsByTransactionId = goalAllocationService
+                .getAllocationEntitiesByTransactionIds(
+                        recentTransactions.stream().map(Transaction::getId).toList());
+
+        List<TransactionResponse> lastEntries = recentTransactions.stream()
+                .map(t -> TransactionResponse.from(t, allocationsByTransactionId.getOrDefault(t.getId(), List.of())))
                 .toList();
 
         // Onboarding checklist

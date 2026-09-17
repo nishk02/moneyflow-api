@@ -1,7 +1,7 @@
 info:
-  name: Create ToGoal Transaction
+  name: Create Withdrawal Transaction - Goal Allocations
   type: http
-  seq: 6
+  seq: 7
 
 http:
   method: POST
@@ -10,13 +10,18 @@ http:
     type: json
     data: |-
       {
-        "date": "2026-08-15",
+        "date": "2026-09-14",
         "type": "TRANSFER",
         "categoryId": "cat-01",
-        "accountId": "d822dcb5-ab18-4357-93be-a82762164b20",
-        "toGoalId": "11951128-58d2-41bf-b305-4c87a706ad3e",
+        "accountId": "{{FROM_ACCOUNT_ID}}",
         "amount": 5000,
-        "notes": "Goal Savings"
+        "toAccountId": "{{TO_ACCOUNT_ID}}",
+        "goalAllocations": [
+          {
+            "goalId": "28bd4e42-854b-45f0-b895-f15216b5fec9",
+            "amount": 5000
+          }
+        ]
       }
   auth:
     type: bearer

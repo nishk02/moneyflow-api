@@ -38,9 +38,14 @@ public class ApiResponse<T> {
     }
 
     public static <T> ApiResponse<T> error(String code, String message) {
-        return new ApiResponse<>(false, null, null, new ApiError(code, message), null);
+        return new ApiResponse<>(false, null, null, new ApiError(code, message, null), null);
     }
 
-    public record ApiError(String code, String message) {
+    public static <T> ApiResponse<T> error(String code, String message, Object details) {
+        return new ApiResponse<>(false, null, null, new ApiError(code, message, details), null);
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ApiError(String code, String message, Object details) {
     }
 }

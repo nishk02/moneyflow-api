@@ -68,7 +68,13 @@ public class TransactionController extends BaseController {
     public ResponseEntity<ApiResponse<TransactionResponse>> updateTransaction(
             @PathVariable String id, @Valid @RequestBody UpdateTransactionRequest request) {
         String userId = getCurrentUserId();
-        return ResponseEntity.ok(ApiResponse.success(transactionService.updateTransaction(userId, id, request)));
+        TransactionResult result = transactionService.updateTransaction(userId, id, request);
+
+        if (result.warning() != null) {
+            return ResponseEntity.ok(ApiResponse.successWithWarning(
+                    result.response(), "Transaction updated successfully", result.warning()));
+        }
+        return ResponseEntity.ok(ApiResponse.success(result.response()));
     }
 
     @DeleteMapping("/{id}")

@@ -2,6 +2,7 @@ package com.moneyflow.transaction;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 public record TransactionResponse(
         String id,
@@ -19,12 +20,14 @@ public record TransactionResponse(
         int calendarMonth,
         int calendarYear,
         boolean planned,
-        String plannedAmountId
+        String plannedAmountId,
+        List<GoalAllocationSummary> goalAllocations
 ) {
     public record CategorySummary(String id, String name, String icon) {}
     public record AccountSummary(String id, String name, String colorLabel) {}
+    public record GoalAllocationSummary(String goalId, String goalName, BigDecimal amount) {}
 
-    public static TransactionResponse from(Transaction transaction) {
+    public static TransactionResponse from(Transaction transaction, List<TransactionGoalAllocation> allocations) {
         CategorySummary category = transaction.getCategory() != null
                 ? new CategorySummary(
                         transaction.getCategory().getId(),
@@ -46,6 +49,10 @@ public record TransactionResponse(
 
         String displayAmount = buildDisplayAmount(transaction.getType(), transaction.getAmount());
 
+        List<GoalAllocationSummary> goalAllocations = allocations.stream()
+                .map(a -> new GoalAllocationSummary(a.getGoal().getId(), a.getGoal().getName(), a.getAmount()))
+                .toList();
+
         return new TransactionResponse(
                 transaction.getId(),
                 transaction.getDate(),
@@ -62,7 +69,8 @@ public record TransactionResponse(
                 transaction.getCalendarMonth(),
                 transaction.getCalendarYear(),
                 transaction.isPlanned(),
-                transaction.getPlannedAmountId()
+                transaction.getPlannedAmountId(),
+                goalAllocations
         );
     }
 

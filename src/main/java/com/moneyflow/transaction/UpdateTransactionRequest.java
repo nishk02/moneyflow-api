@@ -4,6 +4,7 @@ import jakarta.validation.constraints.DecimalMin;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 public record UpdateTransactionRequest(
         LocalDate date,
@@ -13,6 +14,8 @@ public record UpdateTransactionRequest(
         @DecimalMin(value = "0.01", message = "Amount must be greater than zero")
         BigDecimal amount,
 
-        String notes
+        String notes,
+
+        List<GoalAllocationItem> goalAllocations
 ) {
 }

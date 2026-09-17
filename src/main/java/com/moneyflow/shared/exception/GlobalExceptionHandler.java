@@ -21,7 +21,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<?>> handleApiException(ApiException ex) {
         return ResponseEntity
                 .status(ex.getStatus())
-                .body(ApiResponse.error(ex.getCode(), ex.getMessage()));
+                .body(ApiResponse.error(ex.getCode(), ex.getMessage(), ex.getDetails()));
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

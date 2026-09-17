@@ -19,4 +19,6 @@ public interface GoalRepository extends JpaRepository<Goal, String> {
     boolean existsByAccountIdAndActiveTrueAndStatusNot(String accountId, String status);
 
     Optional<Goal> findByAccountIdAndActiveTrueAndStatusNot(String accountId, String status);
+
+    List<Goal> findByAccountIdAndActiveTrueAndStatusNotOrderByDisplayOrderAsc(String accountId, String status);
 }

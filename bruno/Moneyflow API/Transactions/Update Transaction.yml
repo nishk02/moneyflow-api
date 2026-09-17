@@ -1,11 +1,11 @@
 info:
   name: Update Transaction
   type: http
-  seq: 6
+  seq: 5
 
 http:
   method: PUT
-  url: "{{BASE_URL}}/api/transactions/d60093d6-cffe-4b87-b136-fec4a9eb6626"
+  url: "{{BASE_URL}}/api/transactions/{{ID}}"
   body:
     type: json
     data: |-
@@ -16,8 +16,14 @@ http:
     type: bearer
     token: "{{AUTH_TOKEN}}"
 
+runtime:
+  variables:
+    - name: ID
+      value: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
 settings:
   encodeUrl: true
   timeout: 0
   followRedirects: true
   maxRedirects: 5
+  forwardAuthorizationHeader: true
