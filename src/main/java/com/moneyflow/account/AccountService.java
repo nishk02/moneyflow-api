@@ -2,9 +2,10 @@ package com.moneyflow.account;
 
 import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
+import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.exception.ApiException;
-import com.moneyflow.transaction.TransactionService;
+import com.moneyflow.transaction.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +22,7 @@ public class AccountService {
     private final UserRepository userRepository;
     private final TransactionService transactionService;
     private final GoalRepository goalRepository;
+    private final GoalAllocationService goalAllocationService;
 
     public List<AccountResponse> getAccounts(String userId) {
         return mapAccounts(accountRepository.findByUserIdAndActiveTrue(userId), userId);
@@ -96,16 +98,53 @@ public class AccountService {
             account.setColorLabel(request.colorLabel());
         }
 
-        if (request.currentBalance() != null) {
-            account.setCurrentBalance(request.currentBalance());
+        boolean balanceChanged = request.currentBalance() != null
+                && request.currentBalance().compareTo(oldBalance) != 0;
+
+        List<GoalAllocationItem> reduction = List.of();
+
+        if (balanceChanged) {
+            BigDecimal newBalance = request.currentBalance();
+            List<Goal> activeGoals = goalAllocationService.activeGoalsOn(account);
+            BigDecimal earmarked = activeGoals.stream()
+                    .map(Goal::getCurrentProgress)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            if (newBalance.compareTo(earmarked) < 0) {
+                BigDecimal shortfall = earmarked.subtract(newBalance);
+
+                if (request.goalAllocations() == null || request.goalAllocations().isEmpty()) {
+                    throw ApiException.badRequest(
+                            "This balance is below what's currently earmarked across linked goals. " +
+                                    "Choose which goal(s) should absorb the reduction.",
+                            goalAllocationService.buildBalanceCorrectionDetails(account, newBalance));
+                }
+
+                BigDecimal allocatedTotal = request.goalAllocations().stream()
+                        .map(GoalAllocationItem::amount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+                if (allocatedTotal.compareTo(shortfall) < 0) {
+                    throw ApiException.badRequest(
+                            "Selected goal reductions (₹" + formatAmount(allocatedTotal) + ") don't cover the full shortfall (₹" + formatAmount(shortfall) + ").");
+                }
+
+                reduction = request.goalAllocations();
+            }
+
+            account.setCurrentBalance(newBalance);
         }
 
         Account savedAccount = accountRepository.save(account);
 
-        // BR-02: auto-create SETTLEMENT transaction for balance correction
-        if (request.currentBalance() != null && request.currentBalance().compareTo(oldBalance) != 0) {
-            transactionService.createBalanceCorrectionSettlement(
+        if (balanceChanged) {
+            // BR-02: auto-create SETTLEMENT transaction for balance correction
+            Transaction settlement = transactionService.createBalanceCorrectionSettlement(
                     savedAccount, getUser(userId), oldBalance, request.currentBalance());
+
+            if (!reduction.isEmpty()) {
+                goalAllocationService.applyAllocations(settlement, reduction, GoalAllocationDirection.DECREASE);
+            }
         }
 
         return AccountResponse.from(savedAccount, false);
@@ -136,5 +175,9 @@ public class AccountService {
     private User getUser(String userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> ApiException.notFound("User not found"));
+    }
+
+    private String formatAmount(BigDecimal amount) {
+        return amount.stripTrailingZeros().toPlainString();
     }
 }

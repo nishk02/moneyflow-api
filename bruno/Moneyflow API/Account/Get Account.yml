@@ -1,7 +1,7 @@
 info:
   name: Get Account
   type: http
-  seq: 4
+  seq: 5
 
 http:
   method: GET
@@ -15,3 +15,4 @@ settings:
   timeout: 0
   followRedirects: true
   maxRedirects: 5
+  forwardAuthorizationHeader: true

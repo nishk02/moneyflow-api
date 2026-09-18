@@ -262,7 +262,7 @@ public class TransactionService {
     }
 
     @Transactional
-    public void createBalanceCorrectionSettlement(
+    public Transaction createBalanceCorrectionSettlement(
             Account account, User user, BigDecimal oldBalance, BigDecimal newBalance) {
         Category adjustmentCategory = categoryRepository
                 .findById("cat-02")
@@ -281,7 +281,7 @@ public class TransactionService {
         t.setPlanned(false);
         FinancialYearUtil.applyDerivedDateFields(t, LocalDate.now());
 
-        transactionRepository.save(t);
+        return transactionRepository.save(t);
     }
 
     // Internal helpers
@@ -409,8 +409,8 @@ public class TransactionService {
 
         if (remainderFromFreeBalance.compareTo(freeBalance) > 0) {
             throw ApiException.badRequest(
-                    "The portion not covered by your goal selections (₹" + remainderFromFreeBalance +
-                            ") exceeds this account's free balance (₹" + freeBalance + ").");
+                    "The portion not covered by your goal selections (₹" + formatAmount(remainderFromFreeBalance) +
+                            ") exceeds this account's free balance (₹" + formatAmount(freeBalance) + ").");
         }
     }
 

@@ -11,11 +11,11 @@ http:
     data: |-
       {
         "date": "2026-07-04",
-        "type": "VARIABLE_EXPENSE",
-        "categoryId": "cat-12",
+        "type": "INCOME",
+        "categoryId": "cat-17",
         "accountId": "your-account-uuid-here",
-        "amount": 919.19,
-        "notes": "Vijetha"
+        "amount": 10000,
+        "notes": "Dividends"
       }
   auth:
     type: bearer

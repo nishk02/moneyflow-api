@@ -70,15 +70,15 @@ public class GoalAllocationService {
             if (direction == GoalAllocationDirection.DECREASE
                     && item.amount().compareTo(goal.getCurrentProgress()) > 0) {
                 throw ApiException.badRequest(
-                        "Cannot allocate ₹" + item.amount() + " from goal '" + goal.getName() +
-                                "' — only ₹" + goal.getCurrentProgress() + " is currently earmarked there.");
+                        "Cannot allocate ₹" + formatAmount(item.amount()) + " from goal '" + goal.getName() +
+                                "' — only ₹" + formatAmount(goal.getCurrentProgress()) + " is currently earmarked there.");
             }
             if (direction == GoalAllocationDirection.INCREASE
                     && goal.getCurrentProgress().add(item.amount()).compareTo(goal.getTargetAmount()) > 0) {
                 BigDecimal headroom = goal.getTargetAmount().subtract(goal.getCurrentProgress());
                 throw ApiException.badRequest(
-                        "Cannot allocate ₹" + item.amount() + " to goal '" + goal.getName() +
-                                "' — only ₹" + headroom + " is left to reach its target.");
+                        "Cannot allocate ₹" + formatAmount(item.amount()) + " to goal '" + goal.getName() +
+                                "' — only ₹" + formatAmount(headroom) + " is left to reach its target.");
             }
 
             goal.setCurrentProgress(direction == GoalAllocationDirection.DECREASE
@@ -122,6 +122,23 @@ public class GoalAllocationService {
         return new InsufficientFreeBalanceDetails(freeBalance, shortfall, availableGoals);
     }
 
+    public InsufficientFreeBalanceDetails buildBalanceCorrectionDetails(Account account, BigDecimal newBalance) {
+        BigDecimal freeBalance = getFreeBalance(account);
+
+        List<Goal> goals = activeGoalsOn(account);
+        BigDecimal earmarked = goals.stream()
+                .map(Goal::getCurrentProgress)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal shortfall = earmarked.subtract(newBalance);
+
+        List<InsufficientFreeBalanceDetails.GoalAvailability> availableGoals = goals.stream()
+                .map(g -> new InsufficientFreeBalanceDetails.GoalAvailability(
+                        g.getId(), g.getName(), g.getCurrentProgress()))
+                .toList();
+
+        return new InsufficientFreeBalanceDetails(freeBalance, shortfall, availableGoals);
+    }
+
     public void requireSufficientFreeBalance(Account account, BigDecimal requiredAmount) {
         BigDecimal freeBalance = getFreeBalance(account);
         if (requiredAmount.compareTo(freeBalance) > 0) {
@@ -129,5 +146,9 @@ public class GoalAllocationService {
                     "This amount exceeds the account's free balance. Choose which goal(s) to draw the rest from.",
                     buildInsufficientFreeBalanceDetails(account, requiredAmount));
         }
+    }
+
+    private String formatAmount(BigDecimal amount) {
+        return amount.stripTrailingZeros().toPlainString();
     }
 }

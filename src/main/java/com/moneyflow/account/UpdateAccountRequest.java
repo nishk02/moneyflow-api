@@ -1,9 +1,11 @@
 package com.moneyflow.account;
 
+import com.moneyflow.transaction.GoalAllocationItem;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Pattern;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 public record UpdateAccountRequest(
         String name,
@@ -14,6 +16,8 @@ public record UpdateAccountRequest(
         @DecimalMin(value = "0.0", message = "Balance cannot be negative")
         BigDecimal currentBalance,
 
-        String colorLabel
+        String colorLabel,
+
+        List<GoalAllocationItem> goalAllocations
 ) {
 }

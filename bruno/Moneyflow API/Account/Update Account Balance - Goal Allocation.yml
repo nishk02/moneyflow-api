@@ -1,0 +1,39 @@
+info:
+  name: Update Account Balance - Goal Allocation
+  type: http
+  seq: 4
+
+http:
+  method: PUT
+  url: "{{BASE_URL}}/api/accounts/{{ID}}"
+  body:
+    type: json
+    data: |-
+      {
+        "currentBalance": 20000,
+        "goalAllocations": [
+          {
+            "goalId": "874e71d7-2fa6-4c98-9233-ed9f7431ec6c",
+            "amount": 10000
+          },
+          {
+            "goalId": "28bd4e42-854b-45f0-b895-f15216b5fec9",
+            "amount": 15000
+          }
+        ]
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+runtime:
+  variables:
+    - name: ID
+      value: 0f1b4a53-df84-4c8a-a3b2-0d7601e8b35c
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
