@@ -1,5 +1,5 @@
 # Moneyflow — Domain Model & API Contract Specification
-**Version:** 1.4.0  
+**Version:** 1.5.0  
 **Derived from:** Figma screens (39 pages), Excel cashflow template (FY24-25), User journey map  
 **Purpose:** Complete build specification before writing any Java code  
 **Architecture:** Modular monolith · Spring Boot 3 · SQLite · Financial year April–March
@@ -12,6 +12,7 @@
 | 1.2.0 | Backend MVP complete. Analytics finalised (mode/anchor query model). PlannedAmount module deferred to Phase 2. Onboarding step 2 (planned amounts) hardcoded false. Transaction backdating warning (BR-13) added. All implemented modules documented accurately. |
 | 1.3.0 | Transactions API hardened (pagination, sort, flowType filter, PUT scope, smart-skip month navigation, available-periods picker); TRANSFER/goal reversal made fully symmetric; three new business rules (BR-15/16/17); Accounts gained `goalLinked`; Categories gained `isInternal`; Dashboard `balancePercentage`/`savedThisMonth` corrected. Full breakdown below. |
 | 1.4.0 | Onboarding is now invite-only (BR-18). `POST /auth/signup` removed; `ADMIN` invites a `MEMBER` by email, who verifies via a 6-digit OTP before their `User` is created. |
+| 1.5.0 | Goal allocation ledger added, covering both trigger points of the original regression: a withdrawal TRANSFER drawing from a goal-linked account beyond its free balance (BR-19), and a downward `PUT /accounts/{id}` balance correction that drops below the account's earmarked total (BR-20) — both now record *which* goal(s) absorb the change, via a new `transaction_goal_allocations` table, instead of assuming one goal per account. Full breakdown below. |
 
 <details>
 <summary><strong>1.3.0 detailed changes</strong> (click to expand)</summary>
@@ -44,6 +45,58 @@
 - `balancePercentage` documented as a deliberate solvency/safety-margin indicator (not a bounded monthly-depletion gauge); display bands (>30% healthy, 20–30% caution, ≤20% low) traced to the Excel template's conditional formatting.
 - Formula extended to add this month's `Opening Balance`-categorized `SETTLEMENT` sum to the denominator (fixes a false `0%`/"critically low" reading on onboarding day); now returns `null`, not `0`, when the denominator is zero.
 - `savedThisMonth` fixed to sum only `TRANSFER` rows with `toGoalId` set — a plain account-to-account transfer no longer counts as savings.
+
+</details>
+
+<details>
+<summary><strong>1.5.0 detailed changes</strong> (click to expand)</summary>
+
+**Why this was needed:** a goal-linked account is protected from direct expenses (BR-12), so the only way to spend down a goal-linked balance is a `TRANSFER` withdrawal. Before this change, a withdrawal's effect on `Goal.currentProgress` was inferred implicitly — and once an account could back *more than one* active goal, there was no way to know which goal(s) a withdrawal should draw down, and a later balance/amount correction had no memory of what a previous edit had decided. `GoalRepository.findByAccountIdAndActiveTrueAndStatusNot` returning a singular `Optional<Goal>` for the withdrawal path would have thrown `IncorrectResultSizeDataAccessException` the moment two active goals shared an account.
+
+**New concept — free balance:** `account.currentBalance − Σ(currentProgress of that account's active, non-completed goals)`. This is the portion of a goal-linked account's balance that is *not* currently earmarked for any goal — a withdrawal transfer can always draw from free balance without needing to touch any goal, and only needs an explicit goal allocation when the amount exceeds it.
+
+**New table — `transaction_goal_allocations`:** a proper one-to-many child ledger, `{transactionId, goalId, amount}` per goal a withdrawal transfer drew from. Deliberately separate from the existing singular `to_goal_id` column, which remains exactly what it always was — the *arrival*-side tag for a TRANSFER crediting a single goal (BR-07's "arriving" case). `to_goal_id` and this new table are never both populated on the same transaction: one is for crediting a goal, the other for debiting one or more.
+
+**`POST /transactions` (TRANSFER, withdrawal from a goal-linked account):**
+- New optional `goalAllocations: [{ goalId, amount }]` field. If omitted or the amount fits entirely within free balance, no allocation is recorded. If the amount exceeds free balance and no allocation is supplied, `400` with a structured payload (`freeBalance`, `shortfall`, `availableGoals`) instead of a bare message — see below.
+- Guard: the sum of `goalAllocations` amounts cannot exceed the transaction amount; the remaining, unallocated portion must fit within free balance.
+
+**`PUT /transactions/{id}` (same account/transaction, amount changed):**
+Reconciles the existing allocation against the new amount in four tiers, tried in order:
+1. An explicit `goalAllocations` in the request always wins, fully replacing whatever was recorded before (never merged with it).
+2. Otherwise, if the prior allocation still validates against the new amount (its total doesn't exceed the new amount, and the unallocated remainder still fits free balance), it is kept unchanged — even if the new amount is larger, with the extra funded from free balance.
+3. Otherwise, if the new amount on its own fits entirely within free balance, the prior allocation is dropped to empty and a `warning` is returned explaining that the goal money was released — since the new amount needs no goal help at all, keeping a stale allocation would misrepresent the transaction.
+4. Otherwise (the prior allocation no longer fits, and free balance alone still isn't enough), the request is rejected with the same structured shortfall payload as create.
+
+**Deliberate bookkeeping principle:** the system never silently redistributes or reinterprets a user's earmarked goal money without either an explicit instruction (tier 1) or the allocation becoming provably unnecessary (tier 3). It never guesses which goal(s) to draw from when genuine ambiguity exists (tier 4 always asks, never assumes).
+
+**Structured insufficient-balance error:** `ApiException`/`ApiResponse.ApiError` gained a generic `details: Object` field (kept generic so `shared.exception` never depends on a domain module, preserving the modular-monolith dependency direction). For a withdrawal that can't be covered by free balance alone with no allocation supplied, `details` carries:
+```json
+{
+  "freeBalance": 93000,
+  "shortfall": 107000,
+  "availableGoals": [
+    { "goalId": "uuid", "goalName": "Emergency Fund", "currentProgress": 20000 },
+    { "goalId": "uuid", "goalName": "Vacation", "currentProgress": 35000 }
+  ]
+}
+```
+This lets the client render "choose which goal(s) to draw the rest from" directly from the error, without a second round trip. When a goal-level (not account-level) guard fires instead — an individual allocation exceeding what a specific goal can supply or absorb — the error stays a plain message, since that failure isn't the "let the user choose" case.
+
+**Per-goal bounds, both directions:** decreasing a goal's earmarked amount (withdrawal) can't exceed its `currentProgress`; increasing it can't push `currentProgress` past `targetAmount`. The increase-direction cap has no live call path yet (every current caller passes `DECREASE` only) — it exists ahead of a future feature (e.g. crediting a goal from `INCOME`) that will need it.
+
+**`TransactionResponse`** gained a `goalAllocations: [{ goalId, goalName, amount }]` breakdown, present (possibly empty) on every transaction, list and detail alike — surfacing what previously required a failed edit attempt to discover.
+
+**Delete and update** both fully reverse a transaction's allocation rows (and the corresponding goal progress) before any new state is applied — verified end-to-end, not just by reading the `@Transactional` annotation.
+
+**`PUT /accounts/{id}` (balance correction, BR-20):** the second trigger point the original regression came from — editing an account's balance directly, which previously never touched a linked goal's progress at all. Reuses the same structured payload and per-goal guard as above, but needs no tiered reconciliation: unlike a transaction edit, a balance correction is always a brand-new `SETTLEMENT/Adjustment` event (BR-02), never an edit to a prior one, so there's nothing to reconcile against — only a single validate-or-commit check.
+
+- Trigger: `earmarked = Σ(currentProgress of the account's active goals)`. If the corrected `currentBalance` is still `≥ earmarked`, nothing goal-related happens — the correction only reduces free balance, same as before this feature existed.
+- If the new balance drops below `earmarked`, `shortfall = earmarked − newBalance`. No `goalAllocations` supplied → `400` with the same `InsufficientFreeBalanceDetails` shape as the transaction case (`freeBalance` here computed against the *pre-edit* balance, for context).
+- `goalAllocations` supplied → guard is `sum(allocations) ≥ shortfall` (covering more than strictly required is a valid deliberate choice, not blocked); each individual amount is still bounded by that goal's own `currentProgress` via the same per-goal DECREASE guard `applyAllocations` already enforces — this fires independently of the aggregate check, e.g. a goal with only ₹5,000 earmarked can't supply ₹8,000 toward the shortfall even if the total across goals would otherwise cover it.
+- The allocation rows attach to the `SETTLEMENT/Adjustment` transaction this correction creates, exactly like a withdrawal TRANSFER's rows attach to itself — visible the same way in that transaction's `goalAllocations` breakdown.
+
+This closes the second half of the originally reported regression — a manual balance correction on a goal-linked account no longer leaves its goals' progress silently stale.
 
 </details>
 
@@ -210,7 +263,7 @@ Derived from: Cash Flow screens (pages 30–36), Excel monthly sheets
 | `categoryId` | UUID | FK to Category |
 | `accountId` | UUID | FK to Account — the source account |
 | `toAccountId` | UUID | FK to Account — nullable, used for TRANSFER between accounts |
-| `toGoalId` | UUID | FK to Goal — nullable, used for TRANSFER to a goal |
+| `toGoalId` | UUID | FK to Goal — nullable, used for TRANSFER *arriving* at a goal. Never set alongside a `transaction_goal_allocations` row — see §3.8a. |
 | `amount` | BigDecimal | Always stored as positive. Sign derived from type at read time. |
 | `notes` | String | Description, set at creation. Editable via `PUT` for all types except `SETTLEMENT` — see BR-11. |
 | `financialYear` | String | e.g. `FY24-25` — derived server-side from `date`, not user input. See "Two calendars" below. |
@@ -249,6 +302,27 @@ A real, common scenario: a transaction happens Wednesday, the user forgets, and 
 
 ---
 
+### 3.6a TransactionGoalAllocation *(added v1.5.0)*
+Derived from: the multi-goal-per-account gap discovered testing BR-07's withdrawal path.
+
+A one-to-many child ledger recording exactly which goal(s) a withdrawal `TRANSFER` drew from, and how much from each. Exists so an account can back more than one active goal without ambiguity about which goal a given withdrawal affects — the previous approach (implicit, via a singular goal-per-account lookup) could not represent this at all.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `transactionId` | UUID | FK to Transaction, `ON DELETE CASCADE`, not updatable |
+| `goalId` | UUID | FK to Goal, not updatable |
+| `amount` | BigDecimal | The portion of the transaction drawn from this goal. Not updatable — a change in allocation deletes and recreates the row, never edits it in place, mirroring `SETTLEMENT`'s append-only philosophy (§3.4). |
+| `createdAt` | LocalDateTime | No `updatedAt` — rows are never edited, only deleted and recreated. |
+
+**Unique constraint:** `(transactionId, goalId)` — a transaction can allocate to a given goal at most once.
+
+**Relationship to `to_goal_id`:** mutually exclusive on the same transaction. `to_goal_id` (§3.6) is the *arrival* tag — a TRANSFER crediting one goal directly. This table is the *withdrawal* ledger — a TRANSFER debiting one or more goals. A transaction is either arriving at a goal or withdrawing from one or more goals, never both (enforced by BR-15's "destination ≠ source" rule making the two paths structurally disjoint).
+
+**Free balance (computed, not stored):** `account.currentBalance − Σ(currentProgress of that account's active, non-completed goals)`. See BR-19.
+
+---
+
 ### 3.7 PlannedAmount
 Derived from: Planned Amounts screens (pages 21–25)
 
@@ -282,11 +356,11 @@ Derived from: Goals screens (pages 26–29), Excel Goals sheet
 | `id` | UUID | Primary key |
 | `userId` | UUID | FK to User |
 | `name` | String | e.g. "Vacation Fund", "Emergency Fund", "Downpayment" |
-| `targetAmount` | BigDecimal | Total amount to reach |
+| `targetAmount` | BigDecimal | Total amount to reach. Caps how far `currentProgress` may rise — see BR-19. |
 | `accountId` | UUID | FK to Account where goal savings are held. Any account type allowed — see BR-12 for protection behaviour. |
 | `startDate` | LocalDate | |
 | `endDate` | LocalDate | Drives monthly savings calculation |
-| `currentProgress` | BigDecimal | Updated when TRANSFER transactions post to this goal |
+| `currentProgress` | BigDecimal | Moves in both directions — increases on arrival (BR-07) or an explicit allocation increase, decreases on withdrawal (BR-07/BR-19). Bounded between 0 and `targetAmount`. |
 | `monthlySavingsRequired` | BigDecimal | Computed: (targetAmount - currentProgress) / monthsRemaining. Nullable — division by zero avoided when endDate passes. |
 | `displayOrder` | Integer | User can drag to reorder |
 | `status` | Enum | `IN_PROGRESS`, `UPCOMING`, `COMPLETED`, `PAUSED` |
@@ -298,6 +372,8 @@ Derived from: Goals screens (pages 26–29), Excel Goals sheet
 - `progressPercentage` = (currentProgress / targetAmount) × 100
 - `monthsRemaining` = months between today and endDate
 - `savedThisMonth` = sum of TRANSFER transactions to this goal in current calendar month
+
+**An account may back more than one active goal (v1.5.0):** the original singular per-account goal lookup used for withdrawal crediting has been replaced by the allocation ledger (§3.6a) precisely to support this — an account like "Axis Bank" can simultaneously back an Emergency Fund and a Vacation goal, each tracked independently.
 
 ---
 
@@ -551,6 +627,22 @@ CREATE TABLE transactions (
 );
 
 -- ============================================================
+-- TRANSACTION GOAL ALLOCATIONS (withdrawal ledger — v1.5.0, BR-19)
+-- ============================================================
+CREATE TABLE transaction_goal_allocations
+(
+    id             TEXT      NOT NULL PRIMARY KEY,
+    transaction_id TEXT      NOT NULL REFERENCES transactions (id) ON DELETE CASCADE,
+    goal_id        TEXT      NOT NULL REFERENCES goals (id),
+    amount         REAL      NOT NULL CHECK (amount > 0),
+    created_at     TIMESTAMP NOT NULL,
+    UNIQUE (transaction_id, goal_id)
+);
+
+CREATE INDEX idx_tga_transaction ON transaction_goal_allocations (transaction_id);
+CREATE INDEX idx_tga_goal ON transaction_goal_allocations (goal_id);
+
+-- ============================================================
 -- FINANCIAL YEARS
 -- ============================================================
 CREATE TABLE financial_years (
@@ -659,12 +751,18 @@ com.moneyflow
 │
 ├── transaction/
 │   ├── TransactionController.java
-│   ├── TransactionService.java       Balance updates, FY derivation
+│   ├── TransactionService.java              Balance updates, FY derivation, allocation resolution (v1.5.0)
 │   ├── TransactionRepository.java
+│   ├── GoalAllocationService.java           Withdrawal ledger read/write, free-balance math (v1.5.0)
+│   ├── GoalAllocationDirection.java         Enum: INCREASE, DECREASE (v1.5.0)
+│   ├── GoalAllocationItem.java               Record: goalId, amount — shared by create/update requests (v1.5.0)
+│   ├── TransactionGoalAllocationRepository.java (v1.5.0)
+│   ├── InsufficientFreeBalanceDetails.java  Structured 400 payload (v1.5.0)
 │   ├── dto/
-│   │   ├── CreateTransactionRequest.java
-│   │   └── TransactionResponse.java
-│   └── Transaction.java              @Entity
+│   │   ├── CreateTransactionRequest.java    +goalAllocations (v1.5.0)
+│   │   └── TransactionResponse.java         +goalAllocations breakdown (v1.5.0)
+│   ├── Transaction.java              @Entity
+│   └── TransactionGoalAllocation.java @Entity (v1.5.0)
 │
 ├── planned/                          ← PHASE 2 — NOT built in MVP
 │   ├── PlannedAmountController.java
@@ -678,7 +776,7 @@ com.moneyflow
 ├── goal/
 │   ├── GoalController.java
 │   ├── GoalService.java              Progress tracking, reorder
-│   ├── GoalRepository.java
+│   ├── GoalRepository.java           +findByAccountIdAndActiveTrueAndStatusNotOrderByDisplayOrderAsc (v1.5.0, plural — see §3.8)
 │   ├── dto/
 │   │   ├── CreateGoalRequest.java
 │   │   └── GoalResponse.java
@@ -727,9 +825,9 @@ com.moneyflow
     │   └── EmailService.java         Invite + OTP emails (Brevo SMTP)
     ├── exception/
     │   ├── GlobalExceptionHandler.java
-    │   └── ApiException.java
+    │   └── ApiException.java         +details field (v1.5.0)
     ├── dto/
-    │   └── ApiResponse.java          Standard envelope for all responses
+    │   └── ApiResponse.java          Standard envelope for all responses; ApiError +details (v1.5.0)
     └── util/
         └── FinancialYearUtil.java    Date → FY label, month number
 ```
@@ -764,6 +862,27 @@ Every API response uses this wrapper — success or failure.
   "timestamp": "2024-06-14T09:41:00"
 }
 ```
+
+**Error, with structured details (v1.5.0 — see BR-19):**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "BAD_REQUEST",
+    "message": "This amount exceeds the account's free balance. Choose which goal(s) to draw the rest from.",
+    "details": {
+      "freeBalance": 93000,
+      "shortfall": 107000,
+      "availableGoals": [
+        { "goalId": "uuid", "goalName": "Emergency Fund", "currentProgress": 20000 },
+        { "goalId": "uuid", "goalName": "Vacation", "currentProgress": 35000 }
+      ]
+    }
+  },
+  "timestamp": "2024-06-14T09:41:00"
+}
+```
+`details` is omitted (`@JsonInclude NON_NULL`, on both the outer error and the nested payload) on every other error — it exists only for this specific insufficient-free-balance case, so the client can render the allocation picker directly from the error rather than a second round trip.
 
 All endpoints require `Authorization: Bearer {jwt}` except `/auth/**`.
 
@@ -904,7 +1023,21 @@ Useful for filtering account dropdowns in various UI contexts (e.g. show only BA
 `goalLinked` is resolved per request, not stored — for the list endpoint, every active goal for the user is fetched once and checked by account ID in memory, rather than one existence query per account, to avoid an N+1 as the account list grows.
 
 #### GET /accounts/{id} — same shape as a single entry above, including `goalLinked`.
-#### PUT /accounts/{id} — name, type, colorLabel. Balance not directly editable.
+
+#### PUT /accounts/{id} — name, type, colorLabel, currentBalance (triggers BR-02's auto `SETTLEMENT/Adjustment`).
+
+**Downward correction on a goal-linked account (v1.5.0 — see BR-20):**
+```json
+{
+  "currentBalance": 20000,
+  "goalAllocations": [
+    { "goalId": "uuid-emergency-fund", "amount": 10000 },
+    { "goalId": "uuid-vacation", "amount": 15000 }
+  ]
+}
+```
+`goalAllocations` is optional and only meaningful when the new `currentBalance` would drop below the account's total earmarked goal progress — omitted otherwise. If it's needed and omitted, `400` with the same structured `details` payload shown in §6's response envelope. See BR-20 for the full guard.
+
 #### DELETE /accounts/{id} — soft delete. Reject if account has transactions.
 
 ---
@@ -964,6 +1097,23 @@ Three request shapes depending on the tab selected in the Add Entry form.
 }
 ```
 
+**Transfer withdrawing from a goal-linked account, exceeding free balance (v1.5.0 — see BR-19):**
+```json
+{
+  "type": "TRANSFER",
+  "date": "2026-09-14",
+  "amount": 15000.00,
+  "categoryId": "cat-01",
+  "accountId": "uuid-axis-bank",
+  "toAccountId": "uuid-backup",
+  "goalAllocations": [
+    { "goalId": "uuid-emergency-fund", "amount": 10000.00 },
+    { "goalId": "uuid-vacation", "amount": 5000.00 }
+  ]
+}
+```
+`goalAllocations` is optional and only meaningful for a TRANSFER whose source account is goal-linked and whose destination isn't a goal (`toGoalId` null) — i.e. the withdrawal path. Omitted or `[]` means "fund entirely from free balance"; if the amount exceeds free balance in that case, `400` with the structured `details` payload shown above rather than accepting the request.
+
 **Response 201:** Full transaction object with derived fields. May include optional `warning` field (see BR-13):
 ```json
 {
@@ -979,7 +1129,8 @@ Three request shapes depending on the tab selected in the Add Entry form.
     "financialYear": "FY24-25",
     "month": 3,
     "planned": false,
-    "plannedAmountId": null
+    "plannedAmountId": null,
+    "goalAllocations": []
   },
   "warning": "This transaction is dated before your account was set up (2026-08-08). Your opening balance reflects your balance as of setup date — consider updating it if needed."
 }
@@ -987,9 +1138,11 @@ Three request shapes depending on the tab selected in the Add Entry form.
 
 `warning` is absent (`@JsonInclude NON_NULL`) on normal transactions. Only appears when BR-13 condition is met. Frontend shows it as a toast notification — once per account per session, not on every backdated transaction.
 
+`goalAllocations` (v1.5.0) is always present, `[]` when nothing was drawn from a goal — see BR-19.
+
 **Side effects on every POST:**
 1. Update `account.currentBalance` (debit source, credit destination for transfers)
-2. Update `goal.currentProgress` if `toGoalId` set (BR-07)
+2. Update `goal.currentProgress` if `toGoalId` set (BR-07), or via the allocation ledger for a withdrawal (BR-19)
 3. Set `month_summaries.is_dirty = true` for the affected month (BR-06)
 4. Auto-advance `planned_amounts.next_due_date` if `is_planned = true` (Phase 2)
 
@@ -1062,8 +1215,13 @@ Powers a year-based month picker on the Cash Flow screen — calendar lens only 
 `years` and each year's month list are both already `DESC` (most recent first) — no client-side sorting needed. The endpoint deliberately returns the full years+months structure in one response rather than accepting a `?year=` param and fetching per year: for a single-user personal app the total data volume is small, so one payload avoids a round trip every time the user switches year tabs. "Default to current year" is a frontend concern — the client already knows what year "today" is and doesn't need the backend to say so; if the current year genuinely has no transactions yet, it's simply absent from `years`, and the picker's default view is correctly an empty month grid.
 
 #### GET /transactions/{id}
+Response includes `goalAllocations` (v1.5.0), same shape as the list endpoint.
+
 #### PUT /transactions/{id} — corrects `amount`, `category`, and `date` for any transaction type. Also corrects `notes` — for every type *except* `SETTLEMENT`, whose notes are append-only and locked from creation (see BR-11). Never changes `type`, `accountId`, `toAccountId`, or `toGoalId` — see §3.6 Immutability. For a TRANSFER, reverses the old effect on both the source and destination account (and goal progress — arriving via `toGoalId` or leaving a goal-linked source account, see BR-07) before reapplying with the new values — see BR-03, BR-05, BR-07.
-#### DELETE /transactions/{id} — reverses all balance and goal side effects, both source and destination account for TRANSFER — see BR-03.
+
+**Optional `goalAllocations` on PUT (v1.5.0):** for a withdrawal TRANSFER whose amount is changing, resolved via BR-19's four-tier reconciliation. Response may include a `warning` (same field used by BR-13) when tier 3 releases a no-longer-needed allocation back to free balance.
+
+#### DELETE /transactions/{id} — reverses all balance and goal side effects, both source and destination account for TRANSFER — see BR-03. For a withdrawal TRANSFER, also reverses its `transaction_goal_allocations` rows and the corresponding goals' `currentProgress` (v1.5.0, BR-19).
 
 `POST /transactions` additionally rejects a TRANSFER whose destination resolves to the same account as the source (`400`, whether reached via `toAccountId` or `toGoalId`) — see BR-15.
 
@@ -1400,6 +1558,7 @@ The service collects the `MonthSummary` data + goal progress + category breakdow
 | Savings rate | `totalSavings / totalIncome × 100` | Monthly summary |
 | Goal monthly required | `(targetAmount - currentProgress) / monthsToEnd` | Goal card |
 | Goal progress % | `currentProgress / targetAmount × 100` | Goal progress bar |
+| Free balance *(v1.5.0)* | `account.currentBalance - Σ(currentProgress of that account's active goals)` | Withdrawal allocation guard (BR-19) |
 | Days until due | `nextDueDate - today` | Planned amounts list |
 | Display due string | `≤ 30 days → "in X days"`, `> 30 days → "5 August"` | Planned amounts list |
 | Financial year label | See BR-04 below | Transaction, summary |
@@ -1464,6 +1623,8 @@ When an account is **created** (`POST /accounts`) with `currentBalance > 0`, the
 ### BR-02: Balance Correction Auto-Transaction
 When an existing account's `currentBalance` is **edited** (`PUT /accounts/{id}` with a `currentBalance` differing from the stored value), the service automatically creates a second `SETTLEMENT` transaction for the delta, category `Adjustment` (`cat-02`, unchanged from BR-01's category), dated today, `notes = "Balance adjustment: ₹{old} → ₹{new}"` (both amounts normalized via `stripTrailingZeros().toPlainString()` so one side never shows a spurious decimal the other doesn't — e.g. `₹30500 → ₹32000`, not `₹30500.0 → ₹32000`). Unlike BR-01, this delta may be negative (a downward correction). Triggered by deliberate user action — editing the account, not the general-purpose Add Entry form — but the transaction itself is system-generated, not user-typed.
 
+**Interaction with the goal allocation ledger (v1.5.0):** a downward correction on a goal-linked account is now checked against that account's total earmarked goal progress before it's accepted — see BR-20.
+
 **Design rationale (BR-01 & BR-02):** Both mirror the **Adjustment Method** real banks use for reconciliation corrections — the original record is never edited; a new entry bridges the gap, with the discrepancy described in that new entry rather than silently merged into history. See §3.4.
 
 ### BR-03: Transfer Atomicity
@@ -1504,7 +1665,7 @@ Any create, update, or delete on a transaction sets `month_summaries.is_dirty = 
 `goal.currentProgress` moves in both directions, symmetric with how `currentBalance` moves for a TRANSFER (BR-05):
 
 - **Arriving:** a TRANSFER with `toGoalId` set increases the target goal's `currentProgress` by the amount.
-- **Leaving:** a TRANSFER whose *source* account (`accountId`) is itself goal-linked (BR-12) decreases that goal's `currentProgress` by the amount — this is the withdrawal path, moving money back out of a goal account into a regular one.
+- **Leaving:** a TRANSFER whose *source* account (`accountId`) is itself goal-linked (BR-12) decreases that goal's `currentProgress` by the amount — this is the withdrawal path, moving money back out of a goal account into a regular one. As of v1.5.0, *which* goal(s) and how much each contributes is explicit, via the allocation ledger — see BR-19 — rather than assumed to be the account's one and only goal.
 
 No direct PUT endpoint for `currentProgress`. Deleting a transaction reverses whichever of the two effects above applied. Editing the amount reverses the old contribution and applies the new one (same reversal pattern as BR-05, applied to `currentProgress` instead of `currentBalance`) — implemented as part of `PUT /transactions/{id}`, not a separate goal-specific endpoint. A transaction can only trigger one side of this — never both — since `to_account_id` can't equal `account_id` (see BR-15).
 
@@ -1536,7 +1697,7 @@ ALLOWED:  INCOME, TRANSFER, SETTLEMENT
 
 **Why allowed types are allowed:**
 - `INCOME` — money arriving into the account is always fine. No salary designation concept exists in Moneyflow; a user may receive income directly into their savings account.
-- `TRANSFER` — this is the correct mechanism for moving money between accounts, including withdrawing from a goal account back to a spending account. Always tracked, always visible in history.
+- `TRANSFER` — this is the correct mechanism for moving money between accounts, including withdrawing from a goal account back to a spending account. Always tracked, always visible in history. As of v1.5.0, this is exactly the path that now records *which* goal(s) a withdrawal draws from — see BR-19.
 - `SETTLEMENT` — system-generated (BR-01/BR-02), never user-initiated via Add Entry form.
 
 **Implementation:** `TransactionService.createTransaction` checks whether the source `account` is goal-linked before accepting the transaction. Uses `GoalRepository.existsByAccountIdAndActiveTrueAndStatusNot(accountId, "COMPLETED")`.
@@ -1588,6 +1749,40 @@ Replaces open self-registration entirely (`POST /auth/signup` removed, v1.4.0). 
 
 **Why `GET /auth/invites/{token}` is safe to leave unauthenticated and un-rate-limited, unlike `verify-otp`:** a 6-digit OTP has only a million possible values, which is exactly why it's capped at 5 attempts (above) — but the invite token itself is 32 random bytes, effectively unguessable within any practical timeframe. Knowing the token is already equivalent to having received the invite email; the lookup adds no new way to find or confirm a token, it only reveals the email tied to one you already hold.
 
+### BR-19: Withdrawal Goal Allocation Ledger *(added v1.5.0)*
+A TRANSFER withdrawing from a goal-linked account (source account is goal-linked, destination isn't a goal) records *which* goal(s) it drew from and how much from each, via `transaction_goal_allocations` (§3.6a) — rather than assuming a single goal per account, which cannot represent an account backing more than one active goal.
+
+**Free balance** is the amount of a goal-linked account's balance not currently earmarked for any goal: `currentBalance − Σ(currentProgress of that account's active, non-completed goals)`. A withdrawal within free balance needs no goal allocation at all.
+
+**On create:** an optional `goalAllocations: [{goalId, amount}]` is supplied when the withdrawal amount exceeds free balance. Two guards apply at the account level: the sum of allocations cannot exceed the transaction amount, and the unallocated remainder must fit within free balance. If no allocation is supplied and free balance alone is insufficient, the request is rejected (`400`) with a structured payload (`freeBalance`, `shortfall`, `availableGoals` — see §6) rather than a bare message, so the client can build a picker directly from the error.
+
+**On update, when the amount changes**, the existing allocation is reconciled against the new amount in four tiers, tried in order:
+1. **Explicit wins.** A `goalAllocations` in the request always replaces whatever was recorded before, in full — never merged.
+2. **Reuse if still valid.** If the prior allocation still satisfies both account-level guards against the new amount, it's kept as-is — even where the new amount is larger, with the extra funded from free balance.
+3. **Drop if no longer needed.** If the new amount, on its own, fits entirely within free balance, the prior allocation is released to empty and a `warning` explains that the goal money is no longer needed for this transaction.
+4. **Ask, never guess.** If neither of the above holds — the prior split doesn't fit, and free balance alone doesn't cover it either — the request is rejected with the same structured payload as create, asking for an explicit new split.
+
+**The dividing line between tiers 3 and 4 is deliberate, not incidental:** tier 3 only fires when the transaction needs *zero* goal help at the new amount — there is nothing left to decide, so continuing to show an allocation would misrepresent the transaction. Tier 4 fires whenever *any* goal help is still needed but the system cannot determine which goal(s) should provide it — that ambiguity is always resolved by asking, never by a default guess. The system never redistributes or reinterprets a user's earmarked goal money without either an explicit instruction or the allocation becoming provably unnecessary.
+
+**Per-goal bounds, independent of the account-level guards above:** a DECREASE (withdrawal) cannot exceed a goal's own `currentProgress`; an INCREASE cannot push `currentProgress` past `targetAmount`. These fire even when the account-level totals would otherwise allow the request — e.g. asking to draw ₹45,000 from a specific goal that only has ₹40,000 earmarked fails here, independently of whether the overall transaction amount and free balance would have permitted it.
+
+**On delete, or on any update that changes the amount,** the transaction's existing allocation rows (and the corresponding goals' `currentProgress`) are fully reversed before anything new is applied — the same "reverse fully, then reapply" pattern BR-05/BR-07 already use for balance and goal-progress corrections, extended to the allocation ledger.
+
+**Deliberately not addressed by this rule (see §11):** crediting a goal via `INCOME` directly, reallocating between two goals without a real transfer, and editing an existing transaction's goal split without also changing its amount. The downward-balance-correction trigger this rule originally left open is now covered separately — see BR-20.
+
+### BR-20: Balance-Correction Goal Allocation *(added v1.5.0)*
+The second trigger point of the same regression BR-19 addresses: a downward `PUT /accounts/{id}` correction (BR-02) on a goal-linked account is checked against that account's total earmarked goal progress before it's accepted, reusing BR-19's structured shortfall payload and per-goal guard.
+
+**Trigger:** `earmarked = Σ(currentProgress of the account's active goals)`. If the corrected `currentBalance` is still `≥ earmarked`, the correction only reduces free balance — nothing goal-related happens, same as before this rule existed. Only a balance dropping *below* `earmarked` needs a goal to give something up, since the account no longer physically holds enough to back everyone's earmarked amount.
+
+**Single-shot, not tiered — deliberately simpler than BR-19:** a balance correction is always a brand-new `SETTLEMENT/Adjustment` event (BR-02) each time, never an edit to a prior correction, so there is no existing allocation to reconcile against. Only a validate-or-commit check is needed, not BR-19's four-tier reconciliation.
+
+- No `goalAllocations` supplied, and the new balance is short → `400` with the same `InsufficientFreeBalanceDetails` shape BR-19 uses (`freeBalance`, `shortfall`, `availableGoals`) — `shortfall` here is `earmarked − newBalance`, not the transfer-amount-minus-free-balance formula BR-19 uses, but the same response shape lets a single frontend picker component handle both triggers.
+- `goalAllocations` supplied → guard is `sum(allocations) ≥ shortfall` — covering *more* than strictly required is allowed as a deliberate choice, unlike BR-19's withdrawal guard which caps allocations at the transaction amount. Each individual amount is still bounded by that goal's own `currentProgress`, via the same per-goal DECREASE guard `GoalAllocationService.applyAllocations` already enforces — this fires independently of the aggregate check, so a goal with only ₹5,000 earmarked can't supply ₹8,000 toward the shortfall even when the combined total across goals would otherwise cover it.
+- The resulting allocation rows attach to the `SETTLEMENT/Adjustment` transaction this correction creates — visible in that transaction's `goalAllocations` breakdown exactly like a withdrawal TRANSFER's own allocation rows.
+
+This closes the second half of the originally reported regression: a manual balance correction on a goal-linked account no longer leaves its linked goals' progress silently stale.
+
 ---
 
 ## 10. Screens-to-API Mapping
@@ -1610,7 +1805,7 @@ Replaces open self-registration entirely (`POST /auth/signup` removed, v1.4.0). 
 | Cash Flow — empty (p30) | `GET /api/analytics/cashflow-summary?mode=MONTHLY`, `GET /transactions` |
 | Add Entry — expense (p31) | `GET /categories`, `GET /accounts`, `POST /transactions` |
 | Add Entry — income (p32) | `GET /categories`, `GET /accounts`, `POST /transactions` |
-| Add Entry — transfer (p33) | `GET /accounts`, `GET /goals`, `POST /transactions` |
+| Add Entry — transfer (p33) | `GET /accounts`, `GET /goals`, `POST /transactions` (with `goalAllocations` on a goal-linked withdrawal — v1.5.0, BR-19) |
 | Cash Flow — with data (p34–36) | `GET /api/analytics/cashflow-summary?mode=MONTHLY&anchor=`, `GET /transactions?mode=MONTHLY&anchor=` |
 | Accounts — empty (p37) | `GET /accounts` |
 | Add Account (p38) | `POST /accounts` |
@@ -1639,11 +1834,15 @@ These items are consciously not part of the current MVP build. Listed here so re
 | FD/RD (Fixed Deposits / Recurring Deposits) as account types | User discussion | Different financial instrument — lock-in, maturity, interest. Doesn't fit `Account` model. | Separate `Investment` module, post-MVP. |
 | `BalanceAfter` snapshot per transaction | Analytics discussion | Considered and deliberately rejected in favour of `currentBalance - sumNetAfterDate` approach for period-end balance queries. No new column needed. | If performance profiling shows the aggregation approach is insufficient at scale. |
 | Projected/forecast balance (`GET /planned-amounts/forecast?until=...` or similar) | BR-16 discussion — Excel template's month-to-month carry-forward | Genuinely valuable ("at this rate, you'll have ₹X by date Y"), but deliberately *not* built as future-dated `Transaction` rows (blocked by BR-16) — a forecast is a prediction, not a ledger fact, and the two must never share a table. Belongs on top of `PlannedAmount`: `currentBalance` + sum of active `PlannedAmount` occurrences due before the target date. Month-to-month balance carry-forward itself needs no new work — `account.currentBalance` (BR-05) already accumulates continuously with no monthly reset, unlike the Excel template's per-month-sheet structure. | Phase 2, after `PlannedAmount` is built. |
+| `INCOME` crediting a goal directly | Goal allocation design discussion (v1.5.0) | Today only a TRANSFER can move money into or out of a goal (BR-07). Letting `INCOME` credit a goal directly would remove a "log income, then transfer to goal" two-step, but changes BR-07's arrival semantics and needs its own design pass. | Next enhancement iteration. |
+| Goal-to-goal reallocation (including same-account, zero-cash-movement reallocation) | Goal allocation design discussion (v1.5.0) | Moving earmarked money between two goals — including two goals sharing one account, where no real balance actually moves — doesn't fit the existing TRANSFER model (BR-15 requires a real destination). Needs its own request/response shape, not an extension of `goalAllocations`. | After INCOME-to-goal crediting (above). |
+| Editing a transaction's goal split without changing its amount | Discovered testing v1.5.0's tier-1 override | A dedicated "edit allocation" action, independent of the amount field, for correcting how an already-recorded transaction's fixed amount was split across goals (e.g. it should have been 100% Vacation, not half Emergency Fund) — distinct from BR-19's tiers, which only reconcile allocation against a *changing* amount. Purely additive: needs a new UI affordance and validation (sum of new split = existing amount, each goal's own bound), but doesn't change any existing tier's behavior. | Enhancement iteration, no urgency — doesn't block or alter anything shipped in v1.5.0. |
+| Goal deleted while still referenced by a `transaction_goal_allocations` row | Raised during v1.5.0 test planning | `Goal` currently only supports soft delete (`isActive=false`, BR-10) with no hard-delete path, so this can't happen yet as a dangling foreign key — but worth confirming a soft-deleted goal's historical allocations still resolve sensibly (e.g. in `TransactionResponse.goalAllocations`) once a goal-archival UI exists. | If/when a hard-delete or archive UI for goals is built. |
 
 ---
 
-*Moneyflow Domain Model & API Contract — v1.4.0*
-*Backend MVP complete: auth (invite-only), accounts, transactions, goals, dashboard, analytics.*
+*Moneyflow Domain Model & API Contract — v1.5.0*
+*Backend MVP complete: auth (invite-only), accounts, transactions (with withdrawal-side goal allocation ledger), goals, dashboard, analytics.*
 *PlannedAmount module, LLM insights, MonthSummary computation, yearly analytics — all Phase 2.*
 *Analytics query model: mode/anchor (MONTHLY/WEEKLY) + CUSTOM from/to date range. Analytics module finalised: 4 cards (Income, Expense, Savings+rate, Debt Ratio). Balance card removed — account balance belongs on Dashboard, not in period-filtered cashflow view. Monthly breakdown deferred to Phase 2.*
 *Transaction date vs. entry date distinction documented (§3.6): date = when money moved, createdAt = when logged. No speculative computed fields added (loggedLate removed — no screen consumer, not built speculatively).*
@@ -1668,4 +1867,6 @@ These items are consciously not part of the current MVP build. Listed here so re
 *GET /transactions month-navigation hints replaced: hasPreviousMonthData/hasNextMonthData (booleans, adjacent-month-only) → previousPeriod/nextPeriod (resolved period objects, or null). Root cause: BR-13 backdating can leave empty months between "now" and an older backdated entry, and the boolean check only ever looked at the literally-adjacent month — the arrow would disable at the first empty month, permanently hiding real data beyond it. The new fields resolve to the nearest period that actually has data, skipping gaps automatically; calendar lens does this via a single indexed date-range query, FY lens via a bounded (24-step) walk through FinancialYearUtil.previous/next to avoid guessing which century a two-digit FY label belongs to. The now-unused PeriodFilter record and resolvePeriod method were removed as part of this change; the previously-dead hasData helper is now used by the FY-lens walk. cat-35's icon changed 🏁 → 🏛️. Verified integrated on the frontend.*
 *New GET /transactions/available-periods: returns every year and month (calendar lens only) that has at least one transaction, powering a year-based month picker as a companion to the smart-skip arrows — for genuinely distant backdating where even a smart-skip arrow means several clicks. Deliberately returns the full years+months structure in one response rather than a per-year `?year=` param, since total data volume is small for a single-user app; "default to current year" is left to the frontend, which already knows what year "today" is.*
 *v1.4.0: Onboarding is invite-only now — see BR-18.*
+*v1.5.0: Goal allocation ledger added, covering both trigger points of the originally reported regression. BR-19 (transaction side): a TRANSFER drawing from a goal-linked account beyond its free balance records which goal(s) it drew from via a new transaction_goal_allocations table, replacing the previous singular per-account goal assumption. Four-tier reconciliation on amount edits (explicit > reuse-if-valid > drop-if-unneeded > ask). Structured 400 payload (freeBalance/shortfall/availableGoals) added for the insufficient-balance case. Goal allocation increases now capped at targetAmount, mirroring the existing cap on decreases at currentProgress. BR-20 (balance-correction side): a downward PUT /accounts/{id} correction below an account's earmarked goal total now requires (and applies) an explicit goal reduction, reusing BR-19's structured payload and per-goal guard, with a single validate-or-commit check rather than BR-19's tiers, since each correction is a standalone SETTLEMENT/Adjustment event, never an edit to a prior one. Both halves verified end-to-end (create/update/delete, all four tiers, both account- and goal-level guards, plus BR-20's upward/no-op/insufficient/over-reduction/per-goal-guard cases) against real data before shipping.*
 *Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
+</content>
