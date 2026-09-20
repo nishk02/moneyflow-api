@@ -1,5 +1,6 @@
 package com.moneyflow.transaction;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -30,6 +31,7 @@ public record CreateTransactionRequest(
 
         String notes,
 
+        @Valid
         List<GoalAllocationItem> goalAllocations
 ) {
 }

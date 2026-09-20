@@ -1,5 +1,6 @@
 package com.moneyflow.transaction;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 
 import java.math.BigDecimal;
@@ -16,6 +17,7 @@ public record UpdateTransactionRequest(
 
         String notes,
 
+        @Valid
         List<GoalAllocationItem> goalAllocations
 ) {
 }

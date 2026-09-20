@@ -1,6 +1,7 @@
 package com.moneyflow.account;
 
 import com.moneyflow.transaction.GoalAllocationItem;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Pattern;
 
@@ -18,6 +19,7 @@ public record UpdateAccountRequest(
 
         String colorLabel,
 
+        @Valid
         List<GoalAllocationItem> goalAllocations
 ) {
 }

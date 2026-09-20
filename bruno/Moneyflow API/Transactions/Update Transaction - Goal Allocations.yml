@@ -1,0 +1,35 @@
+info:
+  name: Update Transaction - Goal Allocations
+  type: http
+  seq: 6
+
+http:
+  method: PUT
+  url: "{{BASE_URL}}/api/transactions/{{ID}}"
+  body:
+    type: json
+    data: |-
+      {
+        "amount": 20000,
+        "goalAllocations": [
+          {
+            "goalId": "28bd4e42-854b-45f0-b895-f15216b5fec9",
+            "amount": 1000
+          }
+        ]
+      }
+  auth:
+    type: bearer
+    token: "{{AUTH_TOKEN}}"
+
+runtime:
+  variables:
+    - name: ID
+      value: c5794b78-f77e-4133-9bce-7517481844f4
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

@@ -52,6 +52,11 @@ public class GoalAllocationService {
             Transaction transaction, List<GoalAllocationItem> allocations, GoalAllocationDirection direction) {
         if (allocations == null || allocations.isEmpty()) return;
 
+        long distinctGoalCount = allocations.stream().map(GoalAllocationItem::goalId).distinct().count();
+        if (distinctGoalCount != allocations.size()) {
+            throw ApiException.badRequest("Each goal can only appear once in a single allocation list.");
+        }
+
         String userId = transaction.getUser().getId();
         String accountId = transaction.getAccount().getId();
 

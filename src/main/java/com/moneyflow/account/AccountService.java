@@ -73,7 +73,7 @@ public class AccountService {
     }
 
     @Transactional
-    public AccountResponse updateAccount(String userId, String accountId, UpdateAccountRequest request) {
+    public AccountResult updateAccount(String userId, String accountId, UpdateAccountRequest request) {
         Account account = accountRepository.findByIdAndUserId(accountId, userId)
                 .orElseThrow(() -> ApiException.notFound("Account not found"));
 
@@ -101,7 +101,9 @@ public class AccountService {
         boolean balanceChanged = request.currentBalance() != null
                 && request.currentBalance().compareTo(oldBalance) != 0;
 
+        boolean allocationsSupplied = request.goalAllocations() != null && !request.goalAllocations().isEmpty();
         List<GoalAllocationItem> reduction = List.of();
+        String warning = null;
 
         if (balanceChanged) {
             BigDecimal newBalance = request.currentBalance();
@@ -124,15 +126,26 @@ public class AccountService {
                         .map(GoalAllocationItem::amount)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-                if (allocatedTotal.compareTo(shortfall) < 0) {
+                if (allocatedTotal.compareTo(shortfall) != 0) {
+                    String verb = allocatedTotal.compareTo(shortfall) < 0 ? "fall short of" : "exceed";
                     throw ApiException.badRequest(
-                            "Selected goal reductions (₹" + formatAmount(allocatedTotal) + ") don't cover the full shortfall (₹" + formatAmount(shortfall) + ").");
+                            "Selected goal reductions (₹" + formatAmount(allocatedTotal) + ") " + verb +
+                                    " the shortfall (₹" + formatAmount(shortfall) + "). They must add up to exactly this amount.");
                 }
 
                 reduction = request.goalAllocations();
+            } else if (allocationsSupplied) {
+                BigDecimal selectedTotal = request.goalAllocations().stream()
+                        .map(GoalAllocationItem::amount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                warning = "The corrected balance (₹" + formatAmount(newBalance) + ") still covers everything currently " +
+                        "earmarked across your goals, so the ₹" + formatAmount(selectedTotal) +
+                        " you selected to reduce wasn't needed — nothing was drawn from any goal.";
             }
 
             account.setCurrentBalance(newBalance);
+        } else if (allocationsSupplied) {
+            warning = "The account balance didn't change, so there was nothing to reconcile — the goal reduction you selected wasn't applied.";
         }
 
         Account savedAccount = accountRepository.save(account);
@@ -147,7 +160,7 @@ public class AccountService {
             }
         }
 
-        return AccountResponse.from(savedAccount, false);
+        return new AccountResult(AccountResponse.from(savedAccount, false), warning);
     }
 
     @Transactional
