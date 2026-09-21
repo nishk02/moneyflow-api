@@ -39,6 +39,7 @@ public class DashboardService {
             "Do not save what is left after spending; spend what is left after saving.",
             "Financial freedom is available to those who learn about it and work for it."
     );
+    private static final BigDecimal NEGLIGIBLE_REMAINDER = new BigDecimal("1.00");
 
     @Transactional(readOnly = true)
     public DashboardResponse getDashboard(String userId) {
@@ -70,11 +71,16 @@ public class DashboardService {
 
         // Saved this month
         LocalDate now = LocalDate.now();
-        BigDecimal savedThisMonth = Optional.ofNullable(transactionRepository
+        BigDecimal grossSavedThisMonth = Optional.ofNullable(transactionRepository
                 .sumTransferToGoalByCalendarMonth(
                         userId,
                         now.getYear(),
                         now.getMonthValue())).orElse(BigDecimal.ZERO);
+
+        BigDecimal withdrawalsThisMonth = goalAllocationService
+                .sumWithdrawalsByCalendarMonth(userId, now.getYear(), now.getMonthValue());
+
+        BigDecimal savedThisMonth = grossSavedThisMonth.subtract(withdrawalsThisMonth);
 
         // Balance percentage
         BigDecimal totalIncomeThisMonth = transactionRepository
@@ -157,12 +163,14 @@ public class DashboardService {
             return "Set a savings goal to get started!";
         }
 
-        // Already hit the target this month
-        if (savedThisMonth.compareTo(monthlyTarget) >= 0) {
+        BigDecimal remaining = monthlyTarget.subtract(savedThisMonth);
+
+        // Target reached, or close enough that the gap is rounding dust, not a
+        // meaningful amount to ask someone to go save today (e.g. a few paise off
+        // after netting real transactions).
+        if (remaining.compareTo(NEGLIGIBLE_REMAINDER) < 0) {
             return "🎯 You are all set! Just hold on to it 💰";
         }
-
-        BigDecimal remaining = monthlyTarget.subtract(savedThisMonth);
 
         // Balance is less than what's needed — encourage partial saving
         if (totalBalance.compareTo(remaining) < 0) {
@@ -171,7 +179,10 @@ public class DashboardService {
                     + " counts towards your goal! 💪";
         }
 
-        // Balance covers the remaining target — actionable message
-        return "You can save ₹" + remaining.setScale(0, RoundingMode.FLOOR) + " today!";
+        // Balance covers the remaining target — actionable message.
+        // CEILING, not FLOOR: rounding down here would understate what's actually
+        // needed to hit the exact target (e.g. ₹5000.60 remaining → "save ₹5000"
+        // leaves the target 60 paise short even if followed exactly).
+        return "You can save ₹" + remaining.setScale(0, RoundingMode.CEILING) + " today!";
     }
 }

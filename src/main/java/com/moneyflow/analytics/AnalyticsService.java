@@ -1,5 +1,6 @@
 package com.moneyflow.analytics;
 
+import com.moneyflow.transaction.GoalAllocationService;
 import com.moneyflow.transaction.TransactionRepository;
 import com.moneyflow.transaction.TransactionType;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +18,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AnalyticsService {
     private final TransactionRepository transactionRepository;
+    private final GoalAllocationService goalAllocationService;
 
     @Transactional(readOnly = true)
     public AnalyticsResponse getCashflowSummary(
@@ -73,8 +75,14 @@ public class AnalyticsService {
     }
 
     private BigDecimal sumTransferToGoal(String userId, LocalDate from, LocalDate to) {
-        BigDecimal result = transactionRepository.sumTransferToGoalByDateRange(userId, from, to);
-        return result != null ? result : BigDecimal.ZERO;
+        BigDecimal grossDeposits = transactionRepository.sumTransferToGoalByDateRange(userId, from, to);
+        if (grossDeposits == null) {
+            grossDeposits = BigDecimal.ZERO;
+        }
+
+        BigDecimal withdrawals = goalAllocationService.sumWithdrawalsByDateRange(userId, from, to);
+
+        return grossDeposits.subtract(withdrawals);
     }
 
     private BigDecimal computeRate(BigDecimal part, BigDecimal total) {

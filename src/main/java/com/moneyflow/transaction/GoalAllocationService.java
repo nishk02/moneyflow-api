@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -151,6 +152,22 @@ public class GoalAllocationService {
                     "This amount exceeds the account's free balance. Choose which goal(s) to draw the rest from.",
                     buildInsufficientFreeBalanceDetails(account, requiredAmount));
         }
+    }
+
+    /**
+     * Net amount withdrawn from any goal (via the allocation ledger) in the given date range.
+     * Every row today is a withdrawal — GoalAllocationDirection is a write-time-only parameter,
+     * never persisted, and no INCREASE caller exists yet. If a goal-crediting feature ships,
+     * this query and the entity will need a direction column and a DECREASE-only filter.
+     */
+    public BigDecimal sumWithdrawalsByDateRange(String userId, LocalDate from, LocalDate to) {
+        BigDecimal result = allocationRepository.sumByUserIdAndDateRange(userId, from, to);
+        return result != null ? result : BigDecimal.ZERO;
+    }
+
+    public BigDecimal sumWithdrawalsByCalendarMonth(String userId, int year, int month) {
+        BigDecimal result = allocationRepository.sumByUserIdAndCalendarMonth(userId, year, month);
+        return result != null ? result : BigDecimal.ZERO;
     }
 
     private String formatAmount(BigDecimal amount) {
