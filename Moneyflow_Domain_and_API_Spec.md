@@ -101,6 +101,8 @@ This lets the client render "choose which goal(s) to draw the rest from" directl
 
 This closes the second half of the originally reported regression — a manual balance correction on a goal-linked account no longer leaves its goals' progress silently stale.
 
+**Query model simplified: `mode`/`anchor` dropped, plain `from`/`to` only (same day, v1.5.0):** `GET /transactions` and `GET /analytics/cashflow-summary` both ended up on a single, explicit `from`/`to` query contract, replacing a more complex `mode`/`anchor` design that never reached the frontend. See "Period filtering — `GET /transactions` and `GET /analytics/cashflow-summary`" under §6 Transactions for the full rationale and the resulting contract.
+
 </details>
 
 ---
@@ -1049,6 +1051,14 @@ Useful for filtering account dropdowns in various UI contexts (e.g. show only BA
 
 ### Transactions
 
+**Period filtering — `GET /transactions` and `GET /analytics/cashflow-summary` (v1.5.0):** both endpoints share the same period-filtering contract, documented once here rather than twice below.
+
+`GET /analytics/cashflow-summary` originally planned a three-mode query surface — `MONTHLY`/`WEEKLY` resolved server-side from a single `anchor` date, plus `CUSTOM` for an explicit `from`/`to`. A separate gap then surfaced: `GET /transactions` had no way to filter by week at all, only `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth`. Designing the same mode/anchor model for transactions is what exposed the problem — `MONTHLY`/`WEEKLY` mode-resolution wasn't earning its place. Unlike `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth` (real FY-math and skip-to-nearest-period navigation live behind those), a week or month boundary is a one-line client-side computation with no business rule attached. Keeping it server-side meant maintaining "what defines a period" in two places (`AnalyticsService` and a near-identical planned copy for transactions) that would have to agree forever, and — worse — under the mode/anchor model neither endpoint could offer smart prev/next navigation for `WEEKLY` the way `calendarYear`/`calendarMonth` already does, so the client had to drive period-shifting itself regardless. Once the client's already doing that arithmetic, having the backend also resolve `MONTHLY`/`WEEKLY` from an anchor added a second, subtly different definition of "period" with no real benefit.
+
+Collapsed to a single, explicit `from`/`to` on both endpoints — both required, validated `from <= to`, no `mode` or `anchor` concept anywhere. Period shape (this week, this month, a custom range) is now entirely frontend-owned; the backend only ever answers "give me this exact date range." `GET /transactions` keeps `calendarYear`/`calendarMonth` and `financialYear`/`financialMonth` exactly as they were — those still carry real backend logic a client shouldn't reimplement — and a request combining `from`/`to` with either legacy pair on `GET /transactions` is rejected with `400` rather than silently picking one, since the schemes are ambiguous together, not additive (`GET /analytics/cashflow-summary` never had the legacy pair, so no such conflict is possible there). `TransactionSpecifications` gained `inDateRange(from, to)`, an inclusive-both-ends date filter, alongside the existing calendar/FY specifications. The idea of also embedding these KPIs directly inside `GET /transactions`'s response (so a single call returns both the list and its aggregate) was raised and deliberately shelved during this same investigation — parked for if/when a dedicated performance-metrics feature needs both the rows and their aggregate in one round trip.
+
+---
+
 #### POST /transactions
 Three request shapes depending on the tab selected in the Add Entry form.
 
@@ -1160,6 +1170,7 @@ Powers the Cash Flow list with date grouping. Pageable — defaults to `size=100
 ```
 calendarYear=2026&calendarMonth=8       filter by calendar month/year
 financialYear=FY26-27&financialMonth=5  filter by financial year/month (1=April..12=March)
+from=2026-07-27&to=2026-08-02           filter by an explicit inclusive date range (added v1.5.0)
 flowType=INCOME|EXPENSE                 filter by cash-flow direction, independent of the above
 page=0&size=100                         0-indexed page, size defaults to 100
 sort=date,desc                          optional override of the default sort
@@ -1167,11 +1178,13 @@ sort=date,desc                          optional override of the default sort
 
 `sort` follows Spring Data's standard `property,direction` convention — direction is embedded in the same param, not a separate `direction` param (a bare `direction=DESC` alongside `sort=date` is silently ignored; Spring falls back to ascending). Repeat `sort` to order by more than one field, each with its own direction, e.g. `sort=type,asc&sort=date,desc`. Defaults to `date,desc` when omitted.
 
-At most one of the two period filter pairs may be supplied. Neither supplied means an unfiltered listing across all of the user's transactions — still paginated the same way. `flowType` composes with either period filter (or with neither) since it's an orthogonal axis, not a third alternative to calendar-vs-FY.
+Exactly one filtering scheme may be used per request — `calendarYear`/`calendarMonth`, `financialYear`/`financialMonth`, or `from`/`to` — never two at once (`400` if you do). None supplied means an unfiltered listing across all of the user's transactions — still paginated the same way. `flowType` composes with any one period filter (or with none) since it's an orthogonal axis, not a fourth alternative alongside the period schemes.
+
+**`from`/`to` (added v1.5.0):** a general-purpose, inclusive-both-ends date-range filter, added alongside — not in place of — the two period pairs above. `calendarYear`/`calendarMonth` and `financialYear`/`financialMonth` stay because they carry real backend logic a client shouldn't have to reimplement (FY derivation, the smart-skip `previousPeriod`/`nextPeriod` navigation below); `from`/`to` exists for everything else — a week, a custom range, whatever the UI needs next — where the backend has no business rule to contribute beyond filtering by the exact dates it's given. Both `from` and `to` must be supplied together (`400` if only one is present), and `from` must not be after `to` (`400` otherwise). See "Period filtering — `GET /transactions` and `GET /analytics/cashflow-summary`" just above (start of this Transactions section) for why this replaced an earlier, more complex `mode`/`anchor` design that would have applied to this endpoint too.
 
 `flowType` is a grouping over `TransactionType`, not a raw type value — `INCOME` maps to the single `INCOME` type; `EXPENSE` maps to `FIXED_EXPENSE`, `VARIABLE_EXPENSE`, `LENDING`, `BORROWING`, `REPAYMENT`. `TRANSFER` and `SETTLEMENT` are deliberately excluded from both — they're money movement and balance corrections, not real income or spending, matching how Dashboard already buckets `TRANSFER` separately as "savings." A transaction of either excluded type simply won't appear when `flowType` is set, and only shows up in the unfiltered listing.
 
-`previousPeriod`/`nextPeriod` respect whichever `flowType` is active — the resolved target is always a period that has at least one transaction matching the current `flowType`, so the frontend's arrow never lands on an empty filtered screen.
+`previousPeriod`/`nextPeriod` respect whichever `flowType` is active — the resolved target is always a period that has at least one transaction matching the current `flowType`, so the frontend's arrow never lands on an empty filtered screen. Neither field is ever populated for a `from`/`to` request (see below) — there's no adjacent-period concept for an arbitrary range; the client already knows how to compute its own next range for navigation.
 
 **Response 200:**
 ```json
@@ -1191,7 +1204,7 @@ At most one of the two period filter pairs may be supplied. Neither supplied mea
 }
 ```
 
-`previousPeriod`/`nextPeriod` are present only when `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth` are supplied — both absent entirely (not `null`) on the unfiltered listing, since there's no "adjacent period" concept for an unfiltered view. Each shape matches whichever lens is active: `{ calendarYear, calendarMonth }` for a calendar-filtered request, `{ financialYear, financialMonth }` for an FY-filtered one — never both on the same object.
+`previousPeriod`/`nextPeriod` are present only when `calendarYear`/`calendarMonth` or `financialYear`/`financialMonth` are supplied — absent entirely (not `null`) on the unfiltered listing and on a `from`/`to` request alike, since neither has an "adjacent period" concept. Each shape matches whichever lens is active: `{ calendarYear, calendarMonth }` for a calendar-filtered request, `{ financialYear, financialMonth }` for an FY-filtered one — never both on the same object.
 
 **Smart-skip, not merely adjacent:** these were originally booleans (`hasPreviousMonthData`/`hasNextMonthData`) checking only the literally-adjacent month. That broke the moment BR-13's backdating let a user log a transaction several months back while the months in between stayed empty — the arrow would disable at the first empty month and the earlier data would become unreachable through the UI, even though it was still sitting in the database. `previousPeriod`/`nextPeriod` instead resolve to the *nearest period that actually has data*, skipping empty gaps automatically — `null` means genuinely nothing further in that direction, not "the adjacent period happens to be empty."
 
@@ -1420,27 +1433,12 @@ Single endpoint — assembles everything the Home screen needs in one call.
 #### GET /analytics/cashflow-summary
 Powers the 4 summary cards on the Cash Flow screen.
 
-**Query params — three modes:**
+**Query params:**
+```
+from=2026-07-01&to=2026-07-31   inclusive date range — both required
+```
 
-**Mode 1 — Monthly navigation (default):**
-```
-?mode=MONTHLY&anchor=2026-07-15
-```
-Resolves to the 1st–last day of the month containing `anchor`. Default when no params: current calendar month.
-
-**Mode 2 — Weekly navigation:**
-```
-?mode=WEEKLY&anchor=2026-07-28
-```
-Resolves to Monday–Sunday of the week containing `anchor`.
-
-**Mode 3 — Custom date range:**
-```
-?mode=CUSTOM&from=2026-06-01&to=2026-08-31
-```
-Uses dates directly. Maximum range: 1 year (enforced on frontend).
-
-**Why anchor not preset strings:** The frontend owns navigation state (current anchor date). It increments/decrements the anchor by 7 days (weekly) or 1 month (monthly) when user taps arrows. The backend is stateless — it just computes the range from the anchor. No magic strings like `THIS_MONTH` / `LAST_MONTH`.
+Both `from` and `to` are required (`400` if either is missing), and `from` must not be after `to` (`400` otherwise). There is no `mode` or `anchor` param — period shape (this week, this month, a custom range) is entirely the frontend's concern. The Angular period-navigator computes the boundaries for whatever it's displaying — today's month on first load, a shifted range on prev/next navigation, an arbitrary picked range — and always sends them explicitly; the backend never infers a period from a single date. See "Period filtering — `GET /transactions` and `GET /analytics/cashflow-summary`" at the start of §6 Transactions for why this replaced an earlier three-mode (`MONTHLY`/`WEEKLY`/`CUSTOM`) design that never reached the frontend.
 
 **The response includes the resolved period** so Angular can display "July 2026" or "27 Jul – 2 Aug" without computing it client-side:
 
@@ -1457,7 +1455,7 @@ Uses dates directly. Maximum range: 1 year (enforced on frontend).
 
 **Debt Ratio** covers all repayments — EMIs to banks and repayments to individuals alike.
 
-**Savings — corrected to net out withdrawals (v1.5.0):** originally a pure gross figure (`SUM of TRANSFER to goal in period`), carrying the exact same known gap as Dashboard's `savedThisMonth` above — a BR-19 withdrawal or BR-20 balance correction in the same period was invisible to it, so pulling money back out of a goal still showed as full savings. Fixed the same way: `AnalyticsService.sumTransferToGoal` now subtracts `GoalAllocationService.sumWithdrawalsByDateRange` from the gross deposit sum before returning it, using the period's resolved `from`/`to` regardless of which of the three query modes produced them. `savingsRate` (`savings ÷ income × 100`) is computed from this corrected, net `savings` figure, so a rate that previously could read well above 100% purely from an uncorrected gross number now reflects genuine savings performance.
+**Savings — corrected to net out withdrawals (v1.5.0):** originally a pure gross figure (`SUM of TRANSFER to goal in period`), carrying the exact same known gap as Dashboard's `savedThisMonth` above — a BR-19 withdrawal or BR-20 balance correction in the same period was invisible to it, so pulling money back out of a goal still showed as full savings. Fixed the same way: `AnalyticsService.sumTransferToGoal` now subtracts `GoalAllocationService.sumWithdrawalsByDateRange` from the gross deposit sum before returning it, using the request's `from`/`to` directly. `savingsRate` (`savings ÷ income × 100`) is computed from this corrected, net `savings` figure, so a rate that previously could read well above 100% purely from an uncorrected gross number now reflects genuine savings performance.
 
 **Special cases:**
 - `INCOME = 0` → savings rate and debt ratio show `null` (not 0%)
@@ -1468,8 +1466,7 @@ Uses dates directly. Maximum range: 1 year (enforced on frontend).
   "data": {
     "period": {
       "from": "2026-07-01",
-      "to": "2026-07-31",
-      "mode": "MONTHLY"
+      "to": "2026-07-31"
     },
     "income": 50000.00,
     "expense": 15919.19,
@@ -1813,11 +1810,11 @@ This closes the second half of the originally reported regression: a manual bala
 | Goals — empty (p26) | `GET /goals` |
 | Add Goal (p27) | `GET /accounts`, `POST /goals` |
 | Goals — in progress (p28–29) | `GET /goals` |
-| Cash Flow — empty (p30) | `GET /api/analytics/cashflow-summary?mode=MONTHLY`, `GET /transactions` |
+| Cash Flow — empty (p30) | `GET /api/analytics/cashflow-summary?from=&to=`, `GET /transactions` |
 | Add Entry — expense (p31) | `GET /categories`, `GET /accounts`, `POST /transactions` |
 | Add Entry — income (p32) | `GET /categories`, `GET /accounts`, `POST /transactions` |
 | Add Entry — transfer (p33) | `GET /accounts`, `GET /goals`, `POST /transactions` (with `goalAllocations` on a goal-linked withdrawal — v1.5.0, BR-19) |
-| Cash Flow — with data (p34–36) | `GET /api/analytics/cashflow-summary?mode=MONTHLY&anchor=`, `GET /transactions?mode=MONTHLY&anchor=` |
+| Cash Flow — with data (p34–36) | `GET /api/analytics/cashflow-summary?from=&to=`, `GET /transactions?from=&to=` |
 | Accounts — empty (p37) | `GET /accounts` |
 | Add Account (p38) | `POST /accounts` |
 | Accounts — list (p39) | `GET /accounts` |
@@ -1855,7 +1852,7 @@ These items are consciously not part of the current MVP build. Listed here so re
 *Moneyflow Domain Model & API Contract — v1.5.0*
 *Backend MVP complete: auth (invite-only), accounts, transactions (with withdrawal-side goal allocation ledger), goals, dashboard, analytics.*
 *PlannedAmount module, LLM insights, MonthSummary computation, yearly analytics — all Phase 2.*
-*Analytics query model: mode/anchor (MONTHLY/WEEKLY) + CUSTOM from/to date range. Analytics module finalised: 4 cards (Income, Expense, Savings+rate, Debt Ratio). Balance card removed — account balance belongs on Dashboard, not in period-filtered cashflow view. Monthly breakdown deferred to Phase 2.*
+*Analytics query model: plain `from`/`to` date range only, both required (an earlier planned `mode`/`anchor` MONTHLY/WEEKLY design was dropped before frontend integration — see v1.5.0 note below). Analytics module finalised: 4 cards (Income, Expense, Savings+rate, Debt Ratio). Balance card removed — account balance belongs on Dashboard, not in period-filtered cashflow view. Monthly breakdown deferred to Phase 2.*
 *Transaction date vs. entry date distinction documented (§3.6): date = when money moved, createdAt = when logged. No speculative computed fields added (loggedLate removed — no screen consumer, not built speculatively).*
 *BR-03 extended to cover TRANSFER edit/delete atomicity, not just creation, and fixed to be symmetric across source and destination account on both PUT and DELETE — previously only the source account was reversed, silently duplicating balance on the destination side on delete, and never correcting it at all on update.*
 *BR-05 extended with implementation-order constraint for PUT: load old value before overwriting.*
@@ -1879,5 +1876,6 @@ These items are consciously not part of the current MVP build. Listed here so re
 *New GET /transactions/available-periods: returns every year and month (calendar lens only) that has at least one transaction, powering a year-based month picker as a companion to the smart-skip arrows — for genuinely distant backdating where even a smart-skip arrow means several clicks. Deliberately returns the full years+months structure in one response rather than a per-year `?year=` param, since total data volume is small for a single-user app; "default to current year" is left to the frontend, which already knows what year "today" is.*
 *v1.4.0: Onboarding is invite-only now — see BR-18.*
 *v1.5.0: Goal allocation ledger added, covering both trigger points of the originally reported regression. BR-19 (transaction side): a TRANSFER drawing from a goal-linked account beyond its free balance records which goal(s) it drew from via a new transaction_goal_allocations table, replacing the previous singular per-account goal assumption. Four-tier reconciliation on amount edits (explicit > reuse-if-valid > drop-if-unneeded > ask). Structured 400 payload (freeBalance/shortfall/availableGoals) added for the insufficient-balance case. Goal allocation increases now capped at targetAmount, mirroring the existing cap on decreases at currentProgress. BR-20 (balance-correction side): a downward PUT /accounts/{id} correction below an account's earmarked goal total now requires (and applies) an explicit goal reduction, reusing BR-19's structured payload and per-goal guard, with a single validate-or-commit check rather than BR-19's tiers, since each correction is a standalone SETTLEMENT/Adjustment event, never an edit to a prior one. Both halves verified end-to-end (create/update/delete, all four tiers, both account- and goal-level guards, plus BR-20's upward/no-op/insufficient/over-reduction/per-goal-guard cases) against real data before shipping. Hardened the same day, still v1.5.0: BR-20's guard tightened from "at least the shortfall" to exactly the shortfall, after testing showed over-allocation could silently deflate goal progress beyond what a correction actually required; GoalAllocationItem.amount gained a positivity constraint with @Valid cascading into it from all three request DTOs — a gap that would have surfaced as an opaque 500 rather than actual corruption, since transaction_goal_allocations' own CHECK(amount > 0) and the @Transactional rollback it triggers already prevented persistence; a goalAllocations list can no longer repeat the same goalId, same reasoning against the table's UNIQUE(transaction_id, goal_id); PUT /accounts/{id} now returns a warning instead of silently discarding an unnecessary goalAllocations selection; and GlobalExceptionHandler's validation-error messages dropped their technical field-path prefix, since every constraint message across the API already reads as a complete sentence on its own. Frontend integration surfaced one more real gap the same day: Dashboard's savedThisMonth and Analytics' cashflow-summary savings were both still the original gross TRANSFER-to-goal figure, exactly the "deliberately not netted... if ever needed later" case the v1.4.0 note had flagged and deferred — now that the allocation ledger exists, both were corrected to subtract GoalAllocationService.sumWithdrawalsByDateRange/sumWithdrawalsByCalendarMonth from the gross deposit sum, so a same-period BR-19/BR-20 withdrawal now visibly reduces reported savings instead of vanishing from the metric. Dashboard's savingsMessage was corrected alongside it: a sub-rupee remaining amount (now realistic once real paise are being netted) previously floored to a nonsensical "You can save ₹0 today!" — fixed with a sub-₹1 "already met" threshold — and the remaining-amount branch switched from FLOOR to CEILING so it never understates what's actually needed to hit the exact target.*
+*v1.5.0 (same day): GET /transactions gained from/to date-range filtering (inclusive both ends, via a new TransactionSpecifications.inDateRange) to close a gap where only calendarYear/calendarMonth and financialYear/financialMonth existed and there was no way to filter by week. calendarYear/calendarMonth and financialYear/financialMonth are retained unchanged, since they carry real FY-math and smart-skip-navigation logic a client shouldn't reimplement; combining from/to with either legacy pair now returns 400 rather than silently picking one, and from/to must be supplied together with from <= to. GET /analytics/cashflow-summary's originally-planned mode/anchor (MONTHLY/WEEKLY) + CUSTOM query design was dropped before any frontend integration, in favor of the same plain from/to contract, once designing the transactions-side fix showed the mode-resolution logic (Monday-Sunday, 1st-to-last-day) was a one-line client computation with no business rule behind it — not worth maintaining server-side, especially since WEEKLY mode would have had no smart prev/next navigation anyway, unlike calendarYear/calendarMonth. Both endpoints now require from/to together and reject from > to with a consistent ApiException-shaped 400, not a framework-default error body. Embedding these KPIs directly into GET /transactions's response (considered, then shelved, during this same investigation) was deliberately deferred rather than built — parked for if/when a dedicated performance-metrics feature needs both the transaction rows and their aggregate in one call.*
 *Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
 </content>
