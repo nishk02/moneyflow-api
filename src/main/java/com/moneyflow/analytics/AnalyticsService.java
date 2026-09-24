@@ -1,5 +1,6 @@
 package com.moneyflow.analytics;
 
+import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.transaction.GoalAllocationService;
 import com.moneyflow.transaction.TransactionRepository;
 import com.moneyflow.transaction.TransactionType;
@@ -21,29 +22,35 @@ public class AnalyticsService {
     private final GoalAllocationService goalAllocationService;
 
     @Transactional(readOnly = true)
-    public AnalyticsResponse getCashflowSummary(
-            String userId, String mode, LocalDate anchor, LocalDate from, LocalDate to) {
-        LocalDate[] range = resolveDateRange(mode, anchor, from, to);
-        LocalDate resolvedFrom = range[0];
-        LocalDate resolvedTo = range[1];
+    public AnalyticsResponse getCashflowSummary(String userId, LocalDate from, LocalDate to) {
+        validateRange(from, to);
 
-        BigDecimal income = sumByTypes(userId, resolvedFrom, resolvedTo, List.of(TransactionType.INCOME));
+        BigDecimal income = sumByTypes(userId, from, to, List.of(TransactionType.INCOME));
 
-        BigDecimal expense = sumByTypes(userId, resolvedFrom, resolvedTo,
+        BigDecimal expense = sumByTypes(userId, from, to,
                 List.of(TransactionType.FIXED_EXPENSE, TransactionType.VARIABLE_EXPENSE));
 
-        BigDecimal savings = sumTransferToGoal(userId, resolvedFrom, resolvedTo);
+        BigDecimal savings = sumTransferToGoal(userId, from, to);
 
         BigDecimal savingsRate = computeRate(savings, income);
-        BigDecimal debtRatio = computeDebtRatio(userId, resolvedFrom, resolvedTo, income);
+        BigDecimal debtRatio = computeDebtRatio(userId, from, to, income);
 
         return new AnalyticsResponse(
-                new AnalyticsResponse.Period(resolvedFrom, resolvedTo, mode),
+                new AnalyticsResponse.Period(from, to),
                 income,
                 expense,
                 savings,
                 savingsRate,
                 debtRatio);
+    }
+
+    private void validateRange(LocalDate from, LocalDate to) {
+        if (from == null || to == null) {
+            throw ApiException.badRequest("Both 'from' and 'to' are required.");
+        }
+        if (from.isAfter(to)) {
+            throw ApiException.badRequest("'from' cannot be after 'to'.");
+        }
     }
 
     private LocalDate[] resolveDateRange(String mode, LocalDate anchor, LocalDate from, LocalDate to) {

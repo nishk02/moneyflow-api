@@ -35,4 +35,10 @@ public class TransactionSpecifications {
     public static Specification<Transaction> dateAfter(LocalDate date) {
         return (root, query, cb) -> cb.greaterThan(root.get("date"), date);
     }
+
+    public static Specification<Transaction> inDateRange(LocalDate from, LocalDate to) {
+        return (root, query, cb) -> cb.and(
+                cb.greaterThanOrEqualTo(root.get("date"), from),
+                cb.lessThanOrEqualTo(root.get("date"), to));
+    }
 }

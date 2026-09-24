@@ -7,9 +7,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/api/transactions")
@@ -23,12 +26,17 @@ public class TransactionController extends BaseController {
             @RequestParam(required = false) Integer calendarMonth,
             @RequestParam(required = false) String financialYear,
             @RequestParam(required = false) String financialMonth,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(required = false) FlowType flowType,
             @PageableDefault(size = 100, sort = "date", direction = Sort.Direction.DESC) Pageable pageable) {
         String userId = getCurrentUserId();
         return ResponseEntity.ok(ApiResponse.success(
                 transactionService.getTransactions(
-                        userId, calendarYear, calendarMonth, financialYear, financialMonth, flowType, pageable)));
+                        userId, calendarYear, calendarMonth, financialYear, financialMonth,
+                        from, to, flowType, pageable)));
     }
 
     @PostMapping

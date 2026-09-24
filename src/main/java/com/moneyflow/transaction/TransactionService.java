@@ -49,12 +49,35 @@ public class TransactionService {
     @Transactional(readOnly = true)
     public TransactionListResponse getTransactions(
             String userId, Integer calendarYear, Integer calendarMonth,
-            String financialYear, String financialMonth, FlowType flowType, Pageable pageable) {
+            String financialYear, String financialMonth,
+            LocalDate from, LocalDate to,
+            FlowType flowType, Pageable pageable) {
         Pageable stablePageable = ensureStableOrder(pageable);
         validateSort(pageable.getSort());
 
-        Specification<Transaction> currentSpec = resolveCurrentPeriodSpec(
-                calendarYear, calendarMonth, financialYear, financialMonth);
+        boolean dateRangeFilterActive = from != null || to != null;
+        boolean legacyFilterProvided = calendarYear != null || calendarMonth != null
+                || financialYear != null || financialMonth != null;
+
+        if (dateRangeFilterActive && legacyFilterProvided) {
+            throw ApiException.badRequest(
+                    "Cannot combine 'from'/'to' with calendarYear/calendarMonth or " +
+                            "financialYear/financialMonth. Use one filtering scheme per request.");
+        }
+
+        Specification<Transaction> currentSpec;
+        if (dateRangeFilterActive) {
+            if (from == null || to == null) {
+                throw ApiException.badRequest("Both 'from' and 'to' are required together.");
+            }
+            if (from.isAfter(to)) {
+                throw ApiException.badRequest("'from' cannot be after 'to'.");
+            }
+            currentSpec = TransactionSpecifications.inDateRange(from, to);
+        } else {
+            currentSpec = resolveCurrentPeriodSpec(calendarYear, calendarMonth, financialYear, financialMonth);
+        }
+
         Specification<Transaction> spec = combine(userId, currentSpec, flowType);
 
         Page<Transaction> transactionPage = transactionRepository.findAll(spec, stablePageable);
@@ -64,6 +87,12 @@ public class TransactionService {
 
         Page<TransactionResponse> page = transactionPage.map(t ->
                 TransactionResponse.from(t, allocationsByTransactionId.getOrDefault(t.getId(), List.of())));
+
+        if (dateRangeFilterActive) {
+            // Week/month/quarter shape is entirely the client's concern now — it navigates by
+            // recomputing from/to itself, so there's no server-side prev/next to resolve here.
+            return TransactionListResponse.of(PageResponse.from(page));
+        }
 
         boolean calendarFilterActive = calendarYear != null && calendarMonth != null;
         boolean financialFilterActive = financialYear != null && financialMonth != null;

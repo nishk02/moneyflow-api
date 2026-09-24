@@ -21,14 +21,10 @@ public class AnalyticsController extends BaseController {
     @GetMapping("/cashflow-summary")
     public ResponseEntity<ApiResponse<AnalyticsResponse>> getCashflowSummary(
             @RequestParam(required = false)
-            String mode,
-            @RequestParam(required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate anchor,
-            @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
         String userId = getCurrentUserId();
-        return ResponseEntity.ok(ApiResponse.success(analyticsService.getCashflowSummary(userId, mode, anchor, from, to)));
+        return ResponseEntity.ok(ApiResponse.success(analyticsService.getCashflowSummary(userId, from, to)));
     }
 }

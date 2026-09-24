@@ -10,13 +10,15 @@ http:
     type: json
     data: |-
       {
-        "date": "2026-07-04",
+        "accountId": "0f1b4a53-df84-4c8a-a3b2-0d7601e8b35c",
         "type": "TRANSFER",
+        "toAccountId": "8d2123b2-581b-43e1-8290-756d6878a0c1",
+        "amount": 3000,
+        "date": "2026-09-17",
         "categoryId": "cat-01",
-        "accountId": "6f31f86c-4dc6-4d31-9ff7-e61341455d79",
-        "toAccountId": "08ff975b-7551-48dc-bb0b-c531293fcc3b",
-        "amount": 5000,
-        "notes": "Moving money to savings"
+        "goalAllocations": [
+          { "goalId": "874e71d7-2fa6-4c98-9233-ed9f7431ec6c", "amount": 2000 }
+        ]
       }
   auth:
     type: bearer

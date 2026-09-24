@@ -11,6 +11,6 @@ public record AnalyticsResponse(
         BigDecimal savingsRate,
         BigDecimal debtRatio
 ) {
-    public record Period(LocalDate from, LocalDate to, String mode) {
+    public record Period(LocalDate from, LocalDate to) {
     }
 }
