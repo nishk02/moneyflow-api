@@ -1,7 +1,7 @@
 info:
   name: Create Withdrawal Transaction - Goal Allocations
   type: http
-  seq: 9
+  seq: 12
 
 http:
   method: POST

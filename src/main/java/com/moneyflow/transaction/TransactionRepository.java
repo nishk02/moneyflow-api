@@ -98,4 +98,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     @Query("SELECT DISTINCT t.calendarYear, t.calendarMonth FROM Transaction t " +
             "WHERE t.user.id = :userId ORDER BY t.calendarYear DESC, t.calendarMonth DESC")
     List<Object[]> findDistinctCalendarPeriods(@Param("userId") String userId);
+
+    @Query("SELECT MIN(t.date) FROM Transaction t WHERE t.user.id = :userId")
+    LocalDate findEarliestDate(@Param("userId") String userId);
 }

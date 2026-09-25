@@ -1,7 +1,7 @@
 info:
   name: Get Transactions - FY Calendar
   type: http
-  seq: 12
+  seq: 3
 
 http:
   method: GET

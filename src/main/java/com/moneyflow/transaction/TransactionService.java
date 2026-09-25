@@ -119,7 +119,6 @@ public class TransactionService {
         return TransactionResponse.from(transaction, goalAllocationService.getAllocationEntities(transaction));
     }
 
-    // TransactionService.java
     @Transactional(readOnly = true)
     public AvailablePeriodsResponse getAvailablePeriods(String userId) {
         List<Object[]> rows = transactionRepository.findDistinctCalendarPeriods(userId);
@@ -132,7 +131,8 @@ public class TransactionService {
         }
 
         List<Integer> years = new ArrayList<>(monthsByYear.keySet());
-        return new AvailablePeriodsResponse(years, monthsByYear);
+        LocalDate earliestTransactionDate = transactionRepository.findEarliestDate(userId);
+        return new AvailablePeriodsResponse(years, monthsByYear, earliestTransactionDate);
     }
 
     @Transactional
