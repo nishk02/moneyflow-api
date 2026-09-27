@@ -32,6 +32,10 @@ public class ApiException extends RuntimeException {
         return new ApiException(HttpStatus.BAD_REQUEST, "BAD_REQUEST", message, details);
     }
 
+    public static ApiException badRequest(String code, String message, Object details) {
+        return new ApiException(HttpStatus.BAD_REQUEST, code, message, details);
+    }
+
     public static ApiException conflict(String message) {
         return new ApiException(HttpStatus.CONFLICT, "CONFLICT", message);
     }

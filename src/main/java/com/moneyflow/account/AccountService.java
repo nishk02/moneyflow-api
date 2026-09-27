@@ -4,6 +4,7 @@ import com.moneyflow.auth.User;
 import com.moneyflow.auth.UserRepository;
 import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
+import com.moneyflow.shared.exception.ApiErrorCodes;
 import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.transaction.*;
 import lombok.RequiredArgsConstructor;
@@ -117,6 +118,7 @@ public class AccountService {
 
                 if (request.goalAllocations() == null || request.goalAllocations().isEmpty()) {
                     throw ApiException.badRequest(
+                            ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
                             "This balance is below what's currently earmarked across linked goals. " +
                                     "Choose which goal(s) should absorb the reduction.",
                             goalAllocationService.buildBalanceCorrectionDetails(account, newBalance));

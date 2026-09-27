@@ -9,6 +9,7 @@ import com.moneyflow.category.CategoryRepository;
 import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
 import com.moneyflow.shared.dto.PageResponse;
+import com.moneyflow.shared.exception.ApiErrorCodes;
 import com.moneyflow.shared.exception.ApiException;
 import com.moneyflow.shared.util.FinancialYearUtil;
 import lombok.RequiredArgsConstructor;
@@ -584,10 +585,11 @@ public class TransactionService {
             return new AllocationResolution(existingAllocations, null);
         }
 
+        BigDecimal oldTotal = existingAllocations.stream()
+                .map(GoalAllocationItem::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
         if (newAmount.compareTo(goalAllocationService.getFreeBalance(account)) <= 0) {
-            BigDecimal oldTotal = existingAllocations.stream()
-                    .map(GoalAllocationItem::amount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
             String goalNames = existingAllocations.stream()
                     .map(a -> goalRepository.findById(a.goalId()).map(Goal::getName).orElse("a goal"))
                     .distinct()
@@ -601,9 +603,18 @@ public class TransactionService {
             return new AllocationResolution(List.of(), warning);
         }
 
-        // Neither the old breakdown nor free balance alone covers it — let the guard below
-        // throw its normal, precise error asking the client to resupply an explicit breakdown.
-        return new AllocationResolution(existingAllocations, null);
+        // Neither the old breakdown nor free balance alone covers the new amount. Ask the client
+        // to resupply an explicit breakdown, using the same structured shortfall payload as create
+        // (BR-19) and balance correction (BR-20) — not the generic "allocations exceed amount"
+        // validation message, since the client didn't submit an invalid allocation here; the system
+        // reused a stale one that no longer fits the new amount.
+        throw ApiException.badRequest(
+                ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
+                "This transaction previously drew ₹" + formatAmount(oldTotal) + " from your goals, but the new " +
+                        "amount (₹" + formatAmount(newAmount) + ") no longer fits that breakdown, and free balance " +
+                        "alone isn't enough to cover it either. Please provide an updated goalAllocations breakdown " +
+                        "for the new amount.",
+                goalAllocationService.buildInsufficientFreeBalanceDetails(account, newAmount));
     }
 
     private boolean fitsWithoutError(

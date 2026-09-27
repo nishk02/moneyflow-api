@@ -3,6 +3,7 @@ package com.moneyflow.transaction;
 import com.moneyflow.account.Account;
 import com.moneyflow.goal.Goal;
 import com.moneyflow.goal.GoalRepository;
+import com.moneyflow.shared.exception.ApiErrorCodes;
 import com.moneyflow.shared.exception.ApiException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -149,6 +150,7 @@ public class GoalAllocationService {
         BigDecimal freeBalance = getFreeBalance(account);
         if (requiredAmount.compareTo(freeBalance) > 0) {
             throw ApiException.badRequest(
+                    ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
                     "This amount exceeds the account's free balance. Choose which goal(s) to draw the rest from.",
                     buildInsufficientFreeBalanceDetails(account, requiredAmount));
         }
