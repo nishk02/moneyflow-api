@@ -116,12 +116,19 @@ public class AccountService {
             if (newBalance.compareTo(earmarked) < 0) {
                 BigDecimal shortfall = earmarked.subtract(newBalance);
 
+                InsufficientFreeBalanceDetails details = goalAllocationService.buildBalanceCorrectionDetails(account, newBalance);
+
+                if (details.availableGoals().isEmpty()) {
+                    throw ApiException.badRequest("Account balance can't be set below ₹0.");
+                }
+
                 if (request.goalAllocations() == null || request.goalAllocations().isEmpty()) {
                     throw ApiException.badRequest(
                             ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
-                            "This balance is below what's currently earmarked across linked goals. " +
-                                    "Choose which goal(s) should absorb the reduction.",
-                            goalAllocationService.buildBalanceCorrectionDetails(account, newBalance));
+                            "This balance is ₹" + formatAmount(shortfall) + " below what's currently earmarked across linked " +
+                                    "goals (free balance: ₹" + formatAmount(details.freeBalance()) + "). Choose which goal(s) " +
+                                    "should absorb the ₹" + formatAmount(shortfall) + " reduction, or increase the balance instead.",
+                            details);
                 }
 
                 BigDecimal allocatedTotal = request.goalAllocations().stream()

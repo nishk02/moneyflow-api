@@ -147,13 +147,28 @@ public class GoalAllocationService {
     }
 
     public void requireSufficientFreeBalance(Account account, BigDecimal requiredAmount) {
-        BigDecimal freeBalance = getFreeBalance(account);
-        if (requiredAmount.compareTo(freeBalance) > 0) {
+        if (requiredAmount.compareTo(account.getCurrentBalance()) > 0) {
+            BigDecimal shortfallAgainstBalance = requiredAmount.subtract(account.getCurrentBalance());
             throw ApiException.badRequest(
-                    ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
-                    "This amount exceeds the account's free balance. Choose which goal(s) to draw the rest from.",
-                    buildInsufficientFreeBalanceDetails(account, requiredAmount));
+                    "This amount exceeds the account's balance by ₹" + formatAmount(shortfallAgainstBalance) +
+                            " (balance: ₹" + formatAmount(account.getCurrentBalance()) + "). Reduce the amount or add " +
+                            "funds to this account before retrying.");
         }
+
+        BigDecimal freeBalance = getFreeBalance(account);
+        if (requiredAmount.compareTo(freeBalance) <= 0) {
+            return;
+        }
+
+        BigDecimal shortfallAgainstFree = requiredAmount.subtract(freeBalance);
+        InsufficientFreeBalanceDetails details = buildInsufficientFreeBalanceDetails(account, requiredAmount);
+
+        throw ApiException.badRequest(
+                ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
+                "This amount exceeds the account's free balance by ₹" + formatAmount(shortfallAgainstFree) +
+                        " (free balance: ₹" + formatAmount(freeBalance) + "). Add goalAllocations totalling at least ₹" +
+                        formatAmount(shortfallAgainstFree) + " from the available goal(s) to cover the difference.",
+                details);
     }
 
     /**

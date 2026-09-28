@@ -603,18 +603,32 @@ public class TransactionService {
             return new AllocationResolution(List.of(), warning);
         }
 
-        // Neither the old breakdown nor free balance alone covers the new amount. Ask the client
-        // to resupply an explicit breakdown, using the same structured shortfall payload as create
-        // (BR-19) and balance correction (BR-20) — not the generic "allocations exceed amount"
-        // validation message, since the client didn't submit an invalid allocation here; the system
-        // reused a stale one that no longer fits the new amount.
+        // Neither the old breakdown nor free balance covers the new amount.
+        // 1. Hard ceiling: newAmount > total balance → no allocation can fix it, plain error.
+        // 2. Otherwise: shortfall is fixable via goals, so ask the client to resupply a
+        //    breakdown, using the same structured shortfall payload as create (BR-19) and
+        //    balance correction (BR-20) — not the generic "allocations exceed amount" error,
+        //    since the client didn't submit a bad allocation; the system's stale one just
+        //    no longer fits.
+        if (newAmount.compareTo(account.getCurrentBalance()) > 0) {
+            BigDecimal shortfallAgainstBalance = newAmount.subtract(account.getCurrentBalance());
+            throw ApiException.badRequest(
+                    "This transaction previously drew ₹" + formatAmount(oldTotal) + " from your goals, but the new " +
+                            "amount (₹" + formatAmount(newAmount) + ") exceeds this account's balance (₹" +
+                            formatAmount(account.getCurrentBalance()) + ") by ₹" + formatAmount(shortfallAgainstBalance) +
+                            ". Reduce the amount or add funds to this account before retrying.");
+        }
+
+        BigDecimal shortfallAgainstFree = newAmount.subtract(goalAllocationService.getFreeBalance(account));
+        InsufficientFreeBalanceDetails details = goalAllocationService.buildInsufficientFreeBalanceDetails(account, newAmount);
+
         throw ApiException.badRequest(
                 ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
-                "This transaction previously drew ₹" + formatAmount(oldTotal) + " from your goals, but the new " +
-                        "amount (₹" + formatAmount(newAmount) + ") no longer fits that breakdown, and free balance " +
-                        "alone isn't enough to cover it either. Please provide an updated goalAllocations breakdown " +
-                        "for the new amount.",
-                goalAllocationService.buildInsufficientFreeBalanceDetails(account, newAmount));
+                "This transaction previously drew ₹" + formatAmount(oldTotal) + " from your goals, but the new amount " +
+                        "(₹" + formatAmount(newAmount) + ") needs ₹" + formatAmount(shortfallAgainstFree) + " more than " +
+                        "free balance covers. Provide a goalAllocations breakdown totalling at least ₹" +
+                        formatAmount(shortfallAgainstFree) + " across the available goal(s) to make up the difference.",
+                details);
     }
 
     private boolean fitsWithoutError(
