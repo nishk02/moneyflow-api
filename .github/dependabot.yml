@@ -21,6 +21,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Java 21 is the finalized LTS target.
+      # A "major" bump here (21 -> 22, 21 -> 23, ...) is always a non-LTS
+      # release - never something to auto-suggest merging. Dependabot can
+      # still surface genuine patch-level base-image refreshes within the
+      # 21 line (new jammy point releases, security rebuilds of the same tag).
+      - dependency-name: "eclipse-temurin"
+        update-types: [ "version-update:semver-major" ]
 
   # The Actions used by .github/workflows/ci-cd.yml itself (checkout,
   # scp-action, ssh-action, trivy-action, ...).
