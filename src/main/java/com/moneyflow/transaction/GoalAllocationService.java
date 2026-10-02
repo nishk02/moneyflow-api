@@ -267,12 +267,21 @@ public class GoalAllocationService {
     }
 
     /**
-     * Same invariant, for deletion: there's no request body to supply a fix in, so any shortfall
-     * is a hard refusal with guidance, never an ask.
+     * Same invariant, for deletion. With confirm=false (the default), there's no request body to
+     * supply a fix in, so any shortfall is a hard refusal with guidance, never an ask. With
+     * confirm=true, the caller has already seen that refusal once and explicitly chosen to proceed
+     * anyway — the soft-ceiling shortfall is let through, since the goal(s) left under-covered are
+     * exactly the ones this transaction's own allocations already named, not a new, unaudited guess.
+     * The hard ceiling is never bypassable: going below ₹0 isn't a goal-bookkeeping choice to confirm,
+     * it's an impossible transaction.
+     *
+     * Returns an info message when confirm=true actually mattered (a real shortfall was bypassed),
+     * null otherwise.
      */
-    public void requireResultingBalanceSafeForDeletion(Account account, BigDecimal resultingBalance) {
+    public String requireResultingBalanceSafeForDeletion(
+            Account account, BigDecimal resultingBalance, boolean confirm) {
         BalanceCheckResult result = evaluateResultingBalance(account, resultingBalance);
-        if (result.ok()) return;
+        if (result.ok()) return null;
 
         if (result.hardCeilingViolated()) {
             throw ApiException.badRequest(
@@ -280,11 +289,15 @@ public class GoalAllocationService {
                             formatAmount(resultingBalance.negate()) + ".");
         }
 
-        throw ApiException.badRequest(
-                ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
-                "Deleting this would leave ₹" + formatAmount(result.shortfall()) + " earmarked across goals uncovered " +
-                        "(resulting balance: ₹" + formatAmount(resultingBalance) + "). Reduce or complete the affected " +
-                        "goal(s) first, or edit this transaction's amount instead of deleting it, then retry.",
-                buildDetailsForResultingBalance(account, resultingBalance, result.shortfall()));
+        if (!confirm) {
+            throw ApiException.badRequest(
+                    ApiErrorCodes.DELETE_REQUIRES_CONFIRMATION,
+                    "Deleting this would leave ₹" + formatAmount(result.shortfall()) + " earmarked across goals uncovered " +
+                            "(resulting balance: ₹" + formatAmount(resultingBalance) + ").",
+                    buildDetailsForResultingBalance(account, resultingBalance, result.shortfall()));
+        }
+
+        return "Deleting this left ₹" + formatAmount(result.shortfall()) + " of '" + account.getName() +
+                "'s earmarked goal progress uncovered (resulting balance: ₹" + formatAmount(resultingBalance) + ").";
     }
 }

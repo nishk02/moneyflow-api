@@ -270,7 +270,7 @@ public class TransactionService {
     }
 
     @Transactional
-    public void deleteTransaction(String userId, String id) {
+    public String deleteTransaction(String userId, String id, boolean confirm) {
         Transaction transaction = transactionRepository
                 .findByIdAndUserId(id, userId)
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
@@ -292,24 +292,25 @@ public class TransactionService {
                 ? toAccount.getCurrentBalance().subtract(transaction.getAmount())
                 : null;
 
-        // Reverse goal progress FIRST - in-memory only, nothing persisted yet.
-        // This is what makes the guard below honest: by the time it runs,
-        // activeGoalsOn(account) already reflects this deletion's true effect.
         reverseGoalProgress(transaction);
 
-        // NOW check the invariant, with goals already in their post-deletion state.
-        goalAllocationService.requireResultingBalanceSafeForDeletion(account, accountResultingBalance);
-        if (toAccount != null) {
-            goalAllocationService.requireResultingBalanceSafeForDeletion(toAccount, toAccountResultingBalance);
-        }
+        String accountInfo = goalAllocationService.requireResultingBalanceSafeForDeletion(
+                account, accountResultingBalance, confirm);
+        String toAccountInfo = (toAccount != null)
+                ? goalAllocationService.requireResultingBalanceSafeForDeletion(toAccount, toAccountResultingBalance, confirm)
+                : null;
 
-        // Only reached if both checks passed - safe to commit balances and delete.
         reverseBalanceEffect(transaction, account, toAccount);
 
         accountRepository.save(account);
         if (toAccount != null) accountRepository.save(toAccount);
 
         transactionRepository.delete(transaction);
+
+        return Stream.of(accountInfo, toAccountInfo)
+                .filter(Objects::nonNull)
+                .reduce((a, b) -> a + " " + b)
+                .orElse(null);
     }
 
     // BR-01/BR-02: System-generated SETTLEMENT transactions

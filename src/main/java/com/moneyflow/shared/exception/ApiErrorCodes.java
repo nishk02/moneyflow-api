@@ -18,4 +18,6 @@ public class ApiErrorCodes {
      * create (BR-19), edit-reconciliation (BR-19), balance correction (BR-20).
      */
     public static final String GOAL_ALLOCATION_SHORTFALL = "GOAL_ALLOCATION_SHORTFALL";
+
+    public static final String DELETE_REQUIRES_CONFIRMATION = "DELETE_REQUIRES_CONFIRMATION";
 }

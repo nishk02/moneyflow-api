@@ -73,9 +73,11 @@ public class TransactionController extends BaseController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<ApiResponse<Void>> deleteTransaction(@PathVariable String id) {
+    public ResponseEntity<ApiResponse<Void>> deleteTransaction(
+            @PathVariable String id,
+            @RequestParam(required = false, defaultValue = "false") boolean confirm) {
         String userId = getCurrentUserId();
-        transactionService.deleteTransaction(userId, id);
-        return ResponseEntity.ok(ApiResponse.success(null, "Transaction deleted successfully"));
+        String info = transactionService.deleteTransaction(userId, id, confirm);
+        return ResponseEntity.ok(ApiResponse.success(null, "Transaction deleted successfully", null, info));
     }
 }
