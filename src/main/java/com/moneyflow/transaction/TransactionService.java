@@ -192,7 +192,7 @@ public class TransactionService {
                 "date - consider updating it if needed."
                 : null;
 
-        return new TransactionResult(response, warning);
+        return new TransactionResult(response, warning, null);
     }
 
     @Transactional
@@ -200,6 +200,10 @@ public class TransactionService {
         Transaction transaction = transactionRepository
                 .findByIdAndUserId(id, userId)
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
+
+        if (transaction.getType() == TransactionType.SETTLEMENT) {
+            throw ApiException.badRequest("System-generated settlement transactions can't be edited.");
+        }
 
         Account account = transaction.getAccount();
         Account toAccount = transaction.getToAccount();
@@ -210,12 +214,23 @@ public class TransactionService {
         reverseGoalProgress(transaction);
 
         if (request.amount() != null) transaction.setAmount(request.amount());
+        String dateWarning = null;
         if (request.date() != null) {
             if (request.date().isAfter(LocalDate.now())) {
                 throw ApiException.badRequest("Transaction date cannot be in the future");
             }
             transaction.setDate(request.date());
             FinancialYearUtil.applyDerivedDateFields(transaction, request.date());
+
+            // Same rule as createTransaction: only warn if the NEW date backdates
+            // more than 7 days before account setup.
+            LocalDate setupDate = account.getCreatedAt().toLocalDate();
+            if (request.date().isBefore(setupDate.minusDays(7))) {
+                dateWarning = "This transaction is dated before your account was " +
+                        "set up (" + account.getCreatedAt().toLocalDate() + "). " +
+                        "Your opening balance reflects your balance as of setup " +
+                        "date - consider updating it if needed.";
+            }
         }
         if (request.categoryId() != null) {
             Category category = categoryRepository.findById(request.categoryId())
@@ -223,18 +238,22 @@ public class TransactionService {
                     .orElseThrow(() -> ApiException.notFound("Category not found"));
             transaction.setCategory(category);
         }
-        if (request.notes() != null
-                && transaction.getType() != TransactionType.SETTLEMENT) {
+        if (request.notes() != null) {
             transaction.setNotes(request.notes());
         }
 
-        AllocationResolution resolution = resolveEffectiveGoalAllocations(
-                account, transaction.getType(), transaction.getToGoalId(),
-                transaction.getAmount(), request.goalAllocations(), existingAllocations);
+        AllocationResolution resolution;
+        if (transaction.getType() == TransactionType.TRANSFER) {
+            resolution = resolveEffectiveGoalAllocations(
+                    account, transaction.getType(), transaction.getToGoalId(),
+                    transaction.getAmount(), request.goalAllocations(), existingAllocations);
 
-        guardWithdrawalAllocation(
-                account, transaction.getType(), transaction.getToGoalId(),
-                transaction.getAmount(), resolution.allocations());
+            guardWithdrawalAllocation(
+                    account, transaction.getType(), transaction.getToGoalId(),
+                    transaction.getAmount(), resolution.allocations());
+        } else {
+            resolution = resolveNonTransferBalanceImpact(account, transaction, request.goalAllocations(), existingAllocations);
+        }
 
         applyBalanceEffect(transaction, account, toAccount, transaction.getAmount());
 
@@ -247,7 +266,7 @@ public class TransactionService {
 
         TransactionResponse response = TransactionResponse.from(saved, goalAllocationService.getAllocationEntities(saved));
 
-        return new TransactionResult(response, resolution.droppedAllocationWarning());
+        return new TransactionResult(response, dateWarning, resolution.droppedAllocationInfo());
     }
 
     @Transactional
@@ -256,12 +275,36 @@ public class TransactionService {
                 .findByIdAndUserId(id, userId)
                 .orElseThrow(() -> ApiException.notFound("Transaction not found"));
 
+        if (transaction.getType() == TransactionType.SETTLEMENT) {
+            throw ApiException.badRequest("System-generated settlement transactions can't be deleted.");
+        }
+
         Account account = transaction.getAccount();
         Account toAccount = transaction.getToAccount();
 
-        reverseBalanceEffect(transaction, account, toAccount);
-        // BR-07: reverse goal progress on delete
+        BigDecimal accountResultingBalance = switch (transaction.getType()) {
+            case INCOME -> account.getCurrentBalance().subtract(transaction.getAmount());
+            case FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING, BORROWING, REPAYMENT, TRANSFER ->
+                    account.getCurrentBalance().add(transaction.getAmount());
+            case SETTLEMENT -> account.getCurrentBalance(); // unreachable, blocked above
+        };
+        BigDecimal toAccountResultingBalance = (toAccount != null)
+                ? toAccount.getCurrentBalance().subtract(transaction.getAmount())
+                : null;
+
+        // Reverse goal progress FIRST - in-memory only, nothing persisted yet.
+        // This is what makes the guard below honest: by the time it runs,
+        // activeGoalsOn(account) already reflects this deletion's true effect.
         reverseGoalProgress(transaction);
+
+        // NOW check the invariant, with goals already in their post-deletion state.
+        goalAllocationService.requireResultingBalanceSafeForDeletion(account, accountResultingBalance);
+        if (toAccount != null) {
+            goalAllocationService.requireResultingBalanceSafeForDeletion(toAccount, toAccountResultingBalance);
+        }
+
+        // Only reached if both checks passed - safe to commit balances and delete.
+        reverseBalanceEffect(transaction, account, toAccount);
 
         accountRepository.save(account);
         if (toAccount != null) accountRepository.save(toAccount);
@@ -419,7 +462,7 @@ public class TransactionService {
     private void guardWithdrawalAllocation(
             Account account, TransactionType type, String toGoalId,
             BigDecimal amount, List<GoalAllocationItem> goalAllocations) {
-        if (type != TransactionType.TRANSFER || toGoalId != null) return;
+        if (type != TransactionType.TRANSFER) return;
 
         if (goalAllocations == null || goalAllocations.isEmpty()) {
             goalAllocationService.requireSufficientFreeBalance(account, amount);
@@ -445,33 +488,76 @@ public class TransactionService {
     }
 
     private void applyGoalProgress(Transaction transaction, List<GoalAllocationItem> goalAllocations) {
-        if (transaction.getType() != TransactionType.TRANSFER) return;
-
-        if (transaction.getToGoalId() != null) {
+        if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
                         goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
                         goalRepository.save(goal);
                     });
-            return;
         }
 
         goalAllocationService.applyAllocations(transaction, goalAllocations, GoalAllocationDirection.DECREASE);
     }
 
     private void reverseGoalProgress(Transaction transaction) {
-        if (transaction.getType() != TransactionType.TRANSFER) return;
-
-        if (transaction.getToGoalId() != null) {
+        if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
                         goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
                         goalRepository.save(goal);
                     });
-            return;
         }
 
         goalAllocationService.reverseAllocations(transaction, GoalAllocationDirection.DECREASE);
+    }
+
+    private AllocationResolution resolveNonTransferBalanceImpact(
+            Account account, Transaction transaction,
+            List<GoalAllocationItem> requestedAllocations, List<GoalAllocationItem> existingAllocations) {
+
+        BigDecimal resultingBalance = switch (transaction.getType()) {
+            case INCOME -> account.getCurrentBalance().add(transaction.getAmount());
+            case FIXED_EXPENSE, VARIABLE_EXPENSE, LENDING, BORROWING, REPAYMENT ->
+                    account.getCurrentBalance().subtract(transaction.getAmount());
+            default -> null; // TRANSFER handled separately; SETTLEMENT is blocked before reaching here
+        };
+
+        if (resultingBalance == null || goalAllocationService.activeGoalsOn(account).isEmpty()) {
+            return new AllocationResolution(List.of(), null);
+        }
+
+        // Tier 1: an explicit goalAllocations in this request always wins.
+        if (requestedAllocations != null) {
+            List<GoalAllocationItem> validated =
+                    goalAllocationService.guardResultingBalance(account, resultingBalance, requestedAllocations);
+            return new AllocationResolution(validated, null);
+        }
+
+        // Tier 2: nothing new supplied - if the previously-applied allocation still exactly closes
+        // today's gap (amount didn't meaningfully change), keep it rather than asking again.
+        if (!existingAllocations.isEmpty()
+                && goalAllocationService.matchesShortfallExactly(account, resultingBalance, existingAllocations)) {
+            return new AllocationResolution(existingAllocations, null);
+        }
+
+        // existing allocation is no longer needed at all - drop it and say so, rather than silently
+        if (!existingAllocations.isEmpty()
+                && goalAllocationService.noLongerNeedsCoverage(account, resultingBalance)) {
+            BigDecimal oldTotal = existingAllocations.stream()
+                    .map(GoalAllocationItem::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+            String goalNames = existingAllocations.stream()
+                    .map(a -> goalRepository.findById(a.goalId()).map(Goal::getName).orElse("a goal"))
+                    .distinct().reduce((a, b) -> a + " and " + b).orElse("a goal");
+            String info = "This transaction previously drew ₹" + formatAmount(oldTotal) + " from " + goalNames +
+                    ". Since the new amount fits within your account's balance, that money has been returned and " +
+                    "this transaction no longer draws from it.";
+            return new AllocationResolution(List.of(), info);
+        }
+
+        // Tier 3: ask (or reject outright if unfixable).
+        List<GoalAllocationItem> validated =
+                goalAllocationService.guardResultingBalance(account, resultingBalance, null);
+        return new AllocationResolution(validated, null);
     }
 
     private boolean isGoalProtectedType(TransactionType type) {
@@ -566,7 +652,7 @@ public class TransactionService {
         return transactionRepository.findAll(spec, top1).stream().findFirst().orElse(null);
     }
 
-    private record AllocationResolution(List<GoalAllocationItem> allocations, String droppedAllocationWarning) {
+    private record AllocationResolution(List<GoalAllocationItem> allocations, String droppedAllocationInfo) {
     }
 
     private AllocationResolution resolveEffectiveGoalAllocations(

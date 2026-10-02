@@ -190,4 +190,101 @@ public class GoalAllocationService {
     private String formatAmount(BigDecimal amount) {
         return amount.stripTrailingZeros().toPlainString();
     }
+
+    private record BalanceCheckResult(boolean ok, boolean hardCeilingViolated, BigDecimal shortfall) {}
+
+    private BalanceCheckResult evaluateResultingBalance(Account account, BigDecimal resultingBalance) {
+        BigDecimal earmarked = activeGoalsOn(account).stream()
+                .map(Goal::getCurrentProgress)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (resultingBalance.compareTo(earmarked) >= 0) {
+            return new BalanceCheckResult(true, false, BigDecimal.ZERO);
+        }
+        if (resultingBalance.compareTo(BigDecimal.ZERO) < 0) {
+            return new BalanceCheckResult(false, true, BigDecimal.ZERO);
+        }
+        return new BalanceCheckResult(false, false, earmarked.subtract(resultingBalance));
+    }
+
+    public boolean noLongerNeedsCoverage(Account account, BigDecimal resultingBalance) {
+        return evaluateResultingBalance(account, resultingBalance).ok();
+    }
+
+    public boolean matchesShortfallExactly(Account account, BigDecimal resultingBalance, List<GoalAllocationItem> allocations) {
+        BalanceCheckResult result = evaluateResultingBalance(account, resultingBalance);
+        if (result.ok() || result.hardCeilingViolated()) return false;
+        BigDecimal total = allocations.stream().map(GoalAllocationItem::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return total.compareTo(result.shortfall()) == 0;
+    }
+
+    private InsufficientFreeBalanceDetails buildDetailsForResultingBalance(
+            Account account, BigDecimal resultingBalance, BigDecimal shortfall) {
+        List<InsufficientFreeBalanceDetails.GoalAvailability> availableGoals = activeGoalsOn(account).stream()
+                .map(g -> new InsufficientFreeBalanceDetails.GoalAvailability(g.getId(), g.getName(), g.getCurrentProgress()))
+                .toList();
+        return new InsufficientFreeBalanceDetails(resultingBalance, shortfall, availableGoals);
+    }
+
+    /**
+     * The one invariant guard, type-agnostic: given what an account's balance WOULD become after
+     * some operation, enforce that it never drops below what's earmarked to active goals. Used by
+     * any create/update path where the caller can supply a goalAllocations breakdown in the same
+     * request to cover a shortfall.
+     */
+    public List<GoalAllocationItem> guardResultingBalance(
+            Account account, BigDecimal resultingBalance, List<GoalAllocationItem> suppliedAllocations) {
+
+        BalanceCheckResult result = evaluateResultingBalance(account, resultingBalance);
+        if (result.ok()) return List.of();
+
+        if (result.hardCeilingViolated()) {
+            throw ApiException.badRequest(
+                    "This would take the account balance below ₹0, by ₹" + formatAmount(resultingBalance.negate()) +
+                            ". Reduce the amount, or add funds to this account, before retrying.");
+        }
+
+        if (suppliedAllocations == null || suppliedAllocations.isEmpty()) {
+            throw ApiException.badRequest(
+                    ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
+                    "This change leaves ₹" + formatAmount(result.shortfall()) + " earmarked across goals uncovered " +
+                            "(resulting balance: ₹" + formatAmount(resultingBalance) + "). Add goalAllocations " +
+                            "totalling at least ₹" + formatAmount(result.shortfall()) + " from the available goal(s) " +
+                            "to cover the difference.",
+                    buildDetailsForResultingBalance(account, resultingBalance, result.shortfall()));
+        }
+
+        BigDecimal suppliedTotal = suppliedAllocations.stream()
+                .map(GoalAllocationItem::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (suppliedTotal.compareTo(result.shortfall()) != 0) {
+            String verb = suppliedTotal.compareTo(result.shortfall()) < 0 ? "fall short of" : "exceed";
+            throw ApiException.badRequest(
+                    "Selected goal reductions (₹" + formatAmount(suppliedTotal) + ") " + verb +
+                            " the shortfall (₹" + formatAmount(result.shortfall()) + "). They must add up to exactly this amount.");
+        }
+
+        return suppliedAllocations;
+    }
+
+    /**
+     * Same invariant, for deletion: there's no request body to supply a fix in, so any shortfall
+     * is a hard refusal with guidance, never an ask.
+     */
+    public void requireResultingBalanceSafeForDeletion(Account account, BigDecimal resultingBalance) {
+        BalanceCheckResult result = evaluateResultingBalance(account, resultingBalance);
+        if (result.ok()) return;
+
+        if (result.hardCeilingViolated()) {
+            throw ApiException.badRequest(
+                    "Deleting this would take the account balance below ₹0, by ₹" +
+                            formatAmount(resultingBalance.negate()) + ".");
+        }
+
+        throw ApiException.badRequest(
+                ApiErrorCodes.GOAL_ALLOCATION_SHORTFALL,
+                "Deleting this would leave ₹" + formatAmount(result.shortfall()) + " earmarked across goals uncovered " +
+                        "(resulting balance: ₹" + formatAmount(resultingBalance) + "). Reduce or complete the affected " +
+                        "goal(s) first, or edit this transaction's amount instead of deleting it, then retry.",
+                buildDetailsForResultingBalance(account, resultingBalance, result.shortfall()));
+    }
 }
