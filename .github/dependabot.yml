@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # Maven dependencies — pom.xml at the repo root. Covers the parent POM
+  # version (Spring Boot), the jackson-bom.version override we just added,
+  # and every explicitly-versioned dependency (sqlite-jdbc, JJWT).
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # jjwt-api / jjwt-impl / jjwt-jackson are one library split into three
+      # modules that must stay on the same version - see explanation above.
+      jjwt:
+        patterns:
+          - "io.jsonwebtoken:*"
+
+  # The base image tag referenced in DockerFile (eclipse-temurin:21-...).
+  # Does NOT see OS packages baked into that image (e.g. libssl3) - that
+  # category only ever surfaces through Trivy's scan, never here.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # The Actions used by .github/workflows/ci-cd.yml itself (checkout,
+  # scp-action, ssh-action, trivy-action, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
