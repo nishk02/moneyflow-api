@@ -2,7 +2,7 @@
 # Using the full JDK (not JRE) here because compiling needs javac, not just
 # the runtime. This stage's image never ships anywhere - it's discarded
 # after the jar is extracted in Stage 2, so its size doesn't matter.
-FROM eclipse-temurin:21-jdk-jammy AS build
+FROM eclipse-temurin:22-jdk-jammy AS build
 
 WORKDIR /app
 
@@ -30,7 +30,7 @@ RUN ./mvnw clean package -DskipTests -B
 # sqlite-jdbc ships native (non-Java) library files built against glibc,
 # and Alpine's musl libc can fail to load them with a cryptic linking
 # error. jammy costs a little more image size but sidesteps that entirely.
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:22-jre-jammy
 
 WORKDIR /app
 
