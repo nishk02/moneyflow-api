@@ -25,7 +25,7 @@ public class AdminInviteController extends BaseController {
 
         return result.warning() != null
                 ? ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.successWithWarning(result.response(), "Invite created", result.warning()))
+                .body(ApiResponse.success(result.response(), "Invite created", result.warning(), null))
                 : ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(result.response(), "Invite created"));
     }
