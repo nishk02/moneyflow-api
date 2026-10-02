@@ -60,7 +60,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image (not pushed yet - scan it first)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./DockerFile # actual filename in this repo is capitalised - explicit `file:` sidesteps needing a rename
@@ -77,7 +77,7 @@ jobs:
           exit-code: "1" # fail the job if anything CRITICAL/HIGH turns up - same instinct as failing a build on a lint error
 
       - name: Push image (only reached if the scan passed)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./DockerFile
