@@ -104,7 +104,7 @@ public class AccountService {
 
         boolean allocationsSupplied = request.goalAllocations() != null && !request.goalAllocations().isEmpty();
         List<GoalAllocationItem> reduction = List.of();
-        String warning = null;
+        String info = null;
 
         if (balanceChanged) {
             BigDecimal newBalance = request.currentBalance();
@@ -147,14 +147,14 @@ public class AccountService {
                 BigDecimal selectedTotal = request.goalAllocations().stream()
                         .map(GoalAllocationItem::amount)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
-                warning = "The corrected balance (₹" + formatAmount(newBalance) + ") still covers everything currently " +
+                info = "The corrected balance (₹" + formatAmount(newBalance) + ") still covers everything currently " +
                         "earmarked across your goals, so the ₹" + formatAmount(selectedTotal) +
                         " you selected to reduce wasn't needed — nothing was drawn from any goal.";
             }
 
             account.setCurrentBalance(newBalance);
         } else if (allocationsSupplied) {
-            warning = "The account balance didn't change, so there was nothing to reconcile — the goal reduction you selected wasn't applied.";
+            info = "The account balance didn't change, so there was nothing to reconcile — the goal reduction you selected wasn't applied.";
         }
 
         Account savedAccount = accountRepository.save(account);
@@ -169,7 +169,7 @@ public class AccountService {
             }
         }
 
-        return new AccountResult(AccountResponse.from(savedAccount, false), warning);
+        return new AccountResult(AccountResponse.from(savedAccount, false), info);
     }
 
     @Transactional

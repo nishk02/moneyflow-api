@@ -47,12 +47,8 @@ public class AccountController extends BaseController {
         String userId = getCurrentUserId();
         AccountResult result = accountService.updateAccount(userId, id, request);
 
-        if (result.warning() != null) {
-            return ResponseEntity.ok(ApiResponse.successWithWarning(
-                    result.response(), "Account updated successfully", result.warning()));
-        }
-
-        return ResponseEntity.ok(ApiResponse.success(result.response()));
+        return ResponseEntity.ok(ApiResponse.success(
+                result.response(), "Account updated successfully", null, result.info()));
     }
 
     @DeleteMapping("/{id}")
