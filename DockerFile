@@ -6,6 +6,10 @@ FROM eclipse-temurin:21-jdk-jammy AS build
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --only-upgrade libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy only what Maven needs to resolve dependencies first. Docker caches
 # each instruction as its own layer - as long as pom.xml and the wrapper
 # don't change, this dependency-download layer is reused on every future
