@@ -20,6 +20,7 @@ CREATE TABLE transactions
     calendar_year       INTEGER     NOT NULL,
     is_planned          INTEGER     NOT NULL DEFAULT 0,
     planned_amount_id   TEXT,
+    goal_credit_applied REAL,
     created_at          TIMESTAMP   NOT NULL,
     updated_at          TIMESTAMP   NOT NULL,
     CHECK (type != 'TRANSFER' OR to_account_id IS NOT NULL)

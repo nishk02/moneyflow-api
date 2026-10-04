@@ -492,8 +492,14 @@ public class TransactionService {
         if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
-                        goal.setCurrentProgress(goal.getCurrentProgress().add(transaction.getAmount()));
+                        BigDecimal freeBalanceAfterDeposit = goalAllocationService.getFreeBalance(goal.getAccount());
+                        BigDecimal creditToGoal = transaction.getAmount()
+                                .min(freeBalanceAfterDeposit.max(BigDecimal.ZERO));
+
+                        goal.setCurrentProgress(goal.getCurrentProgress().add(creditToGoal));
                         goalRepository.save(goal);
+
+                        transaction.setGoalCreditApplied(creditToGoal);
                     });
         }
 
@@ -504,7 +510,7 @@ public class TransactionService {
         if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
-                        goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getAmount()));
+                        goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getGoalCreditApplied()));
                         goalRepository.save(goal);
                     });
         }

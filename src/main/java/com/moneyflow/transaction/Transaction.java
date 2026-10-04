@@ -57,6 +57,9 @@ public class Transaction {
     @Column(name = "amount", nullable = false, columnDefinition = "REAL")
     private BigDecimal amount;
 
+    @Column(name = "goal_credit_applied", columnDefinition = "REAL")
+    private BigDecimal goalCreditApplied;
+
     @Column(name = "notes")
     private String notes;
 
