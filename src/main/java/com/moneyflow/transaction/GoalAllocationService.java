@@ -300,4 +300,23 @@ public class GoalAllocationService {
         return "Deleting this left ₹" + formatAmount(result.shortfall()) + " of '" + account.getName() +
                 "'s earmarked goal progress uncovered (resulting balance: ₹" + formatAmount(resultingBalance) + ").";
     }
+
+    /**
+     * Guards reversing an arrival TRANSFER's credit to a goal (used by both delete and the
+     * update reverse-then-reapply pattern, via TransactionService.reverseGoalProgress). Unlike
+     * the account-balance hard ceiling, there is no confirm bypass here at all: if a later
+     * transaction (e.g. a BR-19 withdrawal) already drew down part of what this arrival
+     * originally credited, that money is genuinely no longer in the goal's ledger to give back.
+     * There's nothing to confirm — it isn't a bookkeeping choice, it's an impossible reversal.
+     */
+    public void requireProgressSafeForReversal(Goal goal, BigDecimal creditBeingReversed) {
+        BigDecimal resultingProgress = goal.getCurrentProgress().subtract(creditBeingReversed);
+        if (resultingProgress.compareTo(BigDecimal.ZERO) < 0) {
+            BigDecimal shortfall = creditBeingReversed.subtract(goal.getCurrentProgress());
+            throw ApiException.badRequest(
+                    "Deleting this would leave '" + goal.getName() + "' ₹" + formatAmount(shortfall) +
+                            " short — part of this deposit has already been withdrawn elsewhere. Delete or reduce that " +
+                            "withdrawal first, then try deleting this again.");
+        }
+    }
 }

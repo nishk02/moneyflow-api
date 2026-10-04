@@ -510,6 +510,7 @@ public class TransactionService {
         if (transaction.getType() == TransactionType.TRANSFER && transaction.getToGoalId() != null) {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
+                        goalAllocationService.requireProgressSafeForReversal(goal, transaction.getGoalCreditApplied());
                         goal.setCurrentProgress(goal.getCurrentProgress().subtract(transaction.getGoalCreditApplied()));
                         goalRepository.save(goal);
                     });
