@@ -42,6 +42,7 @@ application-dev.properties
 
 ### Bruno
 /bruno/**/Prod.yml
+/bruno/**/__*.yml
 
 # Security: Protect private keys and certificates
 *.pem
