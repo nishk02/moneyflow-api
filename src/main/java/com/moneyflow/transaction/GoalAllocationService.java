@@ -108,6 +108,9 @@ public class GoalAllocationService {
 
         for (TransactionGoalAllocation allocation : existing) {
             Goal goal = allocation.getGoal();
+            if (originalDirection == GoalAllocationDirection.DECREASE) {
+                requireProgressSafeForRestoration(goal, allocation.getAmount());
+            }
             goal.setCurrentProgress(originalDirection == GoalAllocationDirection.DECREASE
                     ? goal.getCurrentProgress().add(allocation.getAmount())
                     : goal.getCurrentProgress().subtract(allocation.getAmount()));
@@ -317,6 +320,27 @@ public class GoalAllocationService {
                     "Deleting this would leave '" + goal.getName() + "' ₹" + formatAmount(shortfall) +
                             " short — part of this deposit has already been withdrawn elsewhere. Delete or reduce that " +
                             "withdrawal first, then try deleting this again.");
+        }
+    }
+
+    /**
+     * Guards restoring a goal's progress when a withdrawal allocation is reversed (used by both
+     * delete and the update reverse-then-reapply pattern for an expense that had drawn money out
+     * of a goal, via TransactionService -> GoalAllocationService.reverseAllocations with
+     * DECREASE). Mirrors requireProgressSafeForReversal's shape but checks the ceiling instead of
+     * the floor: if something else already re-filled this goal in the meantime (e.g. a fresh
+     * arrival TRANSFER topped it back up to its target), blindly adding this withdrawal's amount
+     * back could push currentProgress past targetAmount. No confirm bypass here either — the
+     * goal genuinely doesn't have that much headroom left to restore into.
+     */
+    public void requireProgressSafeForRestoration(Goal goal, BigDecimal amountBeingRestored) {
+        BigDecimal resultingProgress = goal.getCurrentProgress().add(amountBeingRestored);
+        if (resultingProgress.compareTo(goal.getTargetAmount()) > 0) {
+            BigDecimal overflow = resultingProgress.subtract(goal.getTargetAmount());
+            throw ApiException.badRequest(
+                    "Deleting this would push '" + goal.getName() + "' ₹" + formatAmount(overflow) +
+                            " past its target — something else already added money to this goal since this " +
+                            "withdrawal happened. Reduce or remove that first, then try deleting this again.");
         }
     }
 }
