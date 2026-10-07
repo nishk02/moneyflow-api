@@ -384,7 +384,7 @@ Derived from: Goals screens (pages 26–29), Excel Goals sheet
 | `currentProgress` | BigDecimal | Moves in both directions — increases on arrival (BR-07) or an explicit allocation increase, decreases on withdrawal (BR-07/BR-19). Bounded between 0 and `targetAmount`. |
 | `monthlySavingsRequired` | BigDecimal | Serialized as `plannedMonthlySavings` in API responses. Computed: `targetAmount / totalMonths` (startDate to endDate), ignoring `currentProgress` entirely — a frozen plan, re-baselined only when `targetAmount` or `endDate` change via PUT. See BR-21. |
 | `displayOrder` | Integer | User can drag to reorder |
-| `status` | String | `IN_PROGRESS` or `COMPLETED` in practice — see BR-22. `UPCOMING`/`PAUSED` remain in the DB `CHECK` constraint (V5 migration) but the application never sets either; no automatic transitions — see §11. |
+| `status` | String | `IN_PROGRESS` or `COMPLETED` in practice — see BR-22. `UPCOMING`/`PAUSED` remain in the DB `CHECK` constraint (V5 migration) but the application never sets either; no automatic transitions — see §11. A goal not yet started is still `IN_PROGRESS` — see the computed `isUpcoming` flag below and BR-24. |
 | `isActive` | Boolean | Soft delete |
 | `createdAt` | LocalDateTime | |
 | `updatedAt` | LocalDateTime | Added: goal fields (targetAmount, endDate, status) are editable — audit timestamp warranted. |
@@ -393,6 +393,7 @@ Derived from: Goals screens (pages 26–29), Excel Goals sheet
 - `progressPercentage` = (currentProgress / targetAmount) × 100
 - `currentMonthlySavingsRequired` = `(targetAmount - currentProgress) / monthsRemaining`, baselined from today — the live "what do I need to do from here" figure, distinct from the frozen `plannedMonthlySavings` above. See BR-21.
 - `monthsRemaining` = calendar months between today and `endDate`, ignoring day-of-month — see BR-21.
+- `isUpcoming` = `startDate.isAfter(today)` — a goal whose start date hasn't arrived yet. Recomputed on every read, not stored or transitioned by any background process — see BR-24.
 - `savedThisMonth` = sum of TRANSFER transactions to this goal in current calendar month
 
 **An account may back more than one active goal (v1.5.0):** the original singular per-account goal lookup used for withdrawal crediting has been replaced by the allocation ledger (§3.6a) precisely to support this — an account like "Axis Bank" can simultaneously back an Emergency Fund and a Vacation goal, each tracked independently.
@@ -1374,19 +1375,13 @@ Both `POST /transactions` and `PUT /transactions/{id}` reject any `date` later t
 #### GET /goals
 ```json
 {
-  "data": {
-    "overview": {
-      "totalGoalSavings": 22000.00,
-      "monthlyTarget": 22500.00,
-      "savedThisMonth": 20000.00,
-      "overallProgressPercentage": 10
-    },
-    "goals": [ ... ]
-  }
+  "data": [ { ...GoalResponse, "isUpcoming": false }, { ...GoalResponse, "isUpcoming": true } ]
 }
 ```
 
-**Query params:** `status=IN_PROGRESS` · `status=COMPLETED`
+`data` is a flat array of `GoalResponse` (the goal-level `totalGoalSavings`/`monthlyTarget`/`savedThisMonth` aggregate lives on `GET /dashboard` instead, not here).
+
+**Query params:** `status=IN_PROGRESS` · `status=COMPLETED` — any other value (including a typo or wrong case) is rejected with `400` rather than silently returning an empty list. `status=IN_PROGRESS` results are ordered ongoing-before-upcoming, `displayOrder` breaking ties within each group — see BR-24.
 
 #### GET /goals/{id}
 
@@ -1878,6 +1873,12 @@ The two start out equal on a freshly created goal and diverge the moment any pro
 A TRANSFER arriving into a goal via `toGoalId` already clamped its credit to the destination account's free balance (BR-19), but not to the goal's own remaining headroom — a transfer larger than what's left to reach `targetAmount` could push `currentProgress` past `targetAmount`, undermining BR-19's own earmark invariant from the other direction.
 
 **Fix:** the credit applied to the goal is now `min(transferAmount, freeBalance, remainingHeadroom)`, where `remainingHeadroom = targetAmount - currentProgress` (floored at `0`). The clamp is non-blocking, matching the existing free-balance clamp's shape — the TRANSFER itself still moves the full `transactionAmount` between the two accounts; only how much of it is credited toward the goal is capped. The difference is visible via `transaction.goalCreditApplied`, which can therefore be less than `transaction.amount`.
+
+
+### BR-24: Goal List Filtering & Ongoing/Upcoming Ordering *(added v1.5.0)*
+`GET /goals?status=...` only accepts `IN_PROGRESS` or `COMPLETED` (case-insensitive, normalized to uppercase before matching against the stored column) — any other value is rejected with `400` rather than silently matching nothing, which is what the unguarded query previously did on a bad or mistyped value.
+
+Within the `IN_PROGRESS` result, goals are grouped ongoing (`startDate` has already arrived) before upcoming (`startDate` is still in the future) — `displayOrder` only breaks ties within each group, it doesn't decide placement between the two groups. A goal whose `startDate` hasn't arrived yet is not a distinct persisted status: `status` still reads `IN_PROGRESS` for it, same as any other non-completed goal (§3.8 notes `UPCOMING` itself is unused DB headroom, BR-22). Instead, each `GoalResponse` carries a computed `isUpcoming` boolean (`startDate.isAfter(today)`), recalculated fresh on every read rather than stored or flipped by a background process — the goal simply reads as ongoing the moment `startDate` arrives, no migration or scheduled job involved. This mirrors the same computed-vs-stored split BR-21 draws between `currentMonthlySavingsRequired` and `plannedMonthlySavings`.
 
 ---
 
