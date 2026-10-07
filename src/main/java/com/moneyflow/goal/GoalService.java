@@ -13,8 +13,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,6 +25,7 @@ public class GoalService {
     private final GoalRepository goalRepository;
     private final AccountRepository accountRepository;
     private final UserRepository userRepository;
+    private static final Set<String> VALID_GOAL_STATUSES = Set.of("IN_PROGRESS", "COMPLETED");
 
     @Transactional(readOnly = true)
     public List<GoalResponse> getGoals(String userId) {
@@ -33,8 +36,20 @@ public class GoalService {
 
     @Transactional(readOnly = true)
     public List<GoalResponse> getGoalsByStatus(String userId, String status) {
-        return goalRepository.findByUserIdAndStatusAndActiveTrue(userId, status)
-                .stream().map(GoalResponse::from).toList();
+        String normalizedStatus = status.toUpperCase();
+
+        if (!VALID_GOAL_STATUSES.contains(normalizedStatus)) {
+            throw ApiException.badRequest("status must be one of: IN_PROGRESS, COMPLETED");
+        }
+
+        List<Goal> goals = goalRepository.findByUserIdAndStatusAndActiveTrue(userId, normalizedStatus);
+
+        // Ongoing (started) goals before upcoming (not yet started) ones; displayOrder breaks ties within each group.
+        Comparator<Goal> order = normalizedStatus.equals("IN_PROGRESS")
+                ? Comparator.comparing(GoalService::isUpcoming).thenComparing(Goal::getDisplayOrder)
+                : Comparator.comparing(Goal::getDisplayOrder);
+
+        return goals.stream().sorted(order).map(GoalResponse::from).toList();
     }
 
     @Transactional(readOnly = true)
@@ -274,5 +289,9 @@ public class GoalService {
     /** Months between two dates, ignoring the day-of-month component. */
     private static long monthsBetweenIgnoringDay(LocalDate start, LocalDate end) {
         return ChronoUnit.MONTHS.between(start.withDayOfMonth(1), end.withDayOfMonth(1));
+    }
+
+    private static boolean isUpcoming(Goal goal) {
+        return goal.getStartDate() != null && goal.getStartDate().isAfter(LocalDate.now());
     }
 }

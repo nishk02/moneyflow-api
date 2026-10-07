@@ -18,6 +18,7 @@ public record GoalResponse(
         BigDecimal currentMonthlySavingsRequired,
         long monthsRemaining,
         String status,
+        boolean isUpcoming,
         int displayOrder
 ) {
     public record AccountSummary(String id, String name, String colorLabel) {}
@@ -34,6 +35,8 @@ public record GoalResponse(
                 ? Math.max(0, monthsBetweenIgnoringDay(LocalDate.now(), goal.getEndDate()))
                 : 0;
 
+        boolean isUpcoming = goal.getStartDate() != null && goal.getStartDate().isAfter(LocalDate.now());
+
         return new GoalResponse(
                 goal.getId(),
                 goal.getName(),
@@ -47,6 +50,7 @@ public record GoalResponse(
                 calculateCurrentMonthlySavingsRequired(goal), // live, recomputed from today
                 monthsRemaining,
                 goal.getStatus(),
+                isUpcoming,
                 goal.getDisplayOrder()
         );
     }
