@@ -1,7 +1,7 @@
 info:
   name: Create Goal
   type: http
-  seq: 6
+  seq: 3
 
 http:
   method: POST
@@ -10,11 +10,11 @@ http:
     type: json
     data: |-
       {
-        "name": "Emergency Fund",
-        "targetAmount": 100000.00,
-        "accountId": "your-account-uuid",
-        "startDate": "2026-07-01",
-        "endDate": "2027-07-01"
+        "name": "Test Fund",
+        "targetAmount": 1000,
+        "accountId": "6db1e073-8313-4050-940c-deca4139115f",
+        "startDate": "2026-10-07",
+        "endDate": "2026-10-06"
       }
   auth:
     type: bearer
@@ -25,3 +25,4 @@ settings:
   timeout: 0
   followRedirects: true
   maxRedirects: 5
+  forwardAuthorizationHeader: true

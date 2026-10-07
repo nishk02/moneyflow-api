@@ -4,19 +4,13 @@ variables:
     value: http://localhost:8080
   - secret: true
     name: AUTH_TOKEN
-    description: ""
   - secret: true
     name: INVITE_TOKEN
-    description: ""
   - secret: true
     name: _EMAIL
-    description: ""
   - secret: true
     name: _PWD
-    description: ""
   - secret: true
     name: EMAIL
-    description: ""
   - secret: true
     name: PWD
-    description: ""

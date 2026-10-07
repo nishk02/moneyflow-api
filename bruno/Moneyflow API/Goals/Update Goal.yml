@@ -1,20 +1,23 @@
 info:
-  name: Update Account
+  name: Update Goal
   type: http
-  seq: 3
+  seq: 4
 
 http:
   method: PUT
-  url: "{{BASE_URL}}/api/accounts/:id"
+  url: "{{BASE_URL}}/api/goals/:id"
   params:
     - name: id
-      value: ""
+      value: 9185c2d5-cfb0-478f-abff-32851309d724
       type: path
   body:
     type: json
     data: |-
       {
-        "currentBalance": 37500.00
+          "name": "Emergency Fund",
+          "targetAmount": 1000,
+          "accountId": "6db1e073-8313-4050-940c-deca4139115f",
+          "endDate": "2026-11-01"
       }
   auth:
     type: bearer

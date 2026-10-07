@@ -8,7 +8,7 @@ http:
   url: "{{BASE_URL}}/api/admin/invites"
   body:
     type: json
-    data: '{ "email": "nishantsep2@gmail.com" }'
+    data: '{ "email": "rammaduthuri@gmail.com" }'
   auth:
     type: bearer
     token: "{{AUTH_TOKEN}}"

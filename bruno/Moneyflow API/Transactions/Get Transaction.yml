@@ -5,7 +5,11 @@ info:
 
 http:
   method: GET
-  url: "{{BASE_URL}}/api/transactions/d60093d6-cffe-4b87-b136-fec4a9eb6626"
+  url: "{{BASE_URL}}/api/transactions/:id"
+  params:
+    - name: id
+      value: 09094d06-f12d-4f5e-b5c6-bbc3a2d8d987
+      type: path
   auth:
     type: bearer
     token: "{{AUTH_TOKEN}}"

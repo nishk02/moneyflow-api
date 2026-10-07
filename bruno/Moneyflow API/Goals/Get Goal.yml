@@ -1,21 +1,15 @@
 info:
-  name: Update Account
+  name: Get Goal
   type: http
-  seq: 3
+  seq: 2
 
 http:
-  method: PUT
-  url: "{{BASE_URL}}/api/accounts/:id"
+  method: GET
+  url: "{{BASE_URL}}/api/goals/:id"
   params:
     - name: id
       value: ""
       type: path
-  body:
-    type: json
-    data: |-
-      {
-        "currentBalance": 37500.00
-      }
   auth:
     type: bearer
     token: "{{AUTH_TOKEN}}"

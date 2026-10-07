@@ -5,7 +5,11 @@ info:
 
 http:
   method: PUT
-  url: "{{BASE_URL}}/api/accounts/{{ID}}"
+  url: "{{BASE_URL}}/api/accounts/:id"
+  params:
+    - name: id
+      value: ""
+      type: path
   body:
     type: json
     data: |-
