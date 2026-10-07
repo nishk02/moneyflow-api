@@ -1,15 +1,16 @@
 info:
-  name: Reopen Goal
+  name: Get Goals by status
   type: http
-  seq: 7
+  seq: 2
 
 http:
-  method: POST
-  url: "{{BASE_URL}}/api/goals/:id/reopen"
+  method: GET
+  url: "{{BASE_URL}}/api/goals?status=IN_PROGRESS"
   params:
-    - name: id
-      value: ""
-      type: path
+    - name: status
+      value: IN_PROGRESS
+      type: query
+      description: IN_PROGRESS or COMPLETED
   auth:
     type: bearer
     token: "{{AUTH_TOKEN}}"
