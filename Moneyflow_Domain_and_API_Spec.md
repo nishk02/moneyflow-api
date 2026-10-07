@@ -377,21 +377,22 @@ Derived from: Goals screens (pages 26–29), Excel Goals sheet
 | `id` | UUID | Primary key |
 | `userId` | UUID | FK to User |
 | `name` | String | e.g. "Vacation Fund", "Emergency Fund", "Downpayment" |
-| `targetAmount` | BigDecimal | Total amount to reach. Caps how far `currentProgress` may rise — see BR-19. |
-| `accountId` | UUID | FK to Account where goal savings are held. Any account type allowed — see BR-12 for protection behaviour. |
-| `startDate` | LocalDate | |
-| `endDate` | LocalDate | Drives monthly savings calculation |
+| `targetAmount` | BigDecimal | Total amount to reach. Caps how far `currentProgress` may rise — see BR-19. Editable via PUT, but cannot drop below `currentProgress` — see BR-21. |
+| `accountId` | UUID | FK to Account where goal savings are held. Any account type allowed — see BR-12 for protection behaviour. Editable via PUT only while `currentProgress` is 0 — see BR-21. |
+| `startDate` | LocalDate | Immutable once the goal is created — anchors the frozen `plannedMonthlySavings` pace. Not accepted on `UpdateGoalRequest` at all. |
+| `endDate` | LocalDate | Drives monthly savings calculation. Editable via PUT in either direction (extend or shorten) — see BR-21. |
 | `currentProgress` | BigDecimal | Moves in both directions — increases on arrival (BR-07) or an explicit allocation increase, decreases on withdrawal (BR-07/BR-19). Bounded between 0 and `targetAmount`. |
-| `monthlySavingsRequired` | BigDecimal | Computed: (targetAmount - currentProgress) / monthsRemaining. Nullable — division by zero avoided when endDate passes. |
+| `monthlySavingsRequired` | BigDecimal | Serialized as `plannedMonthlySavings` in API responses. Computed: `targetAmount / totalMonths` (startDate to endDate), ignoring `currentProgress` entirely — a frozen plan, re-baselined only when `targetAmount` or `endDate` change via PUT. See BR-21. |
 | `displayOrder` | Integer | User can drag to reorder |
-| `status` | Enum | `IN_PROGRESS`, `UPCOMING`, `COMPLETED`, `PAUSED` |
+| `status` | String | `IN_PROGRESS` or `COMPLETED` in practice — see BR-22. `UPCOMING`/`PAUSED` remain in the DB `CHECK` constraint (V5 migration) but the application never sets either; no automatic transitions — see §11. |
 | `isActive` | Boolean | Soft delete |
 | `createdAt` | LocalDateTime | |
 | `updatedAt` | LocalDateTime | Added: goal fields (targetAmount, endDate, status) are editable — audit timestamp warranted. |
 
 **Computed at read time (not stored):**
 - `progressPercentage` = (currentProgress / targetAmount) × 100
-- `monthsRemaining` = months between today and endDate
+- `currentMonthlySavingsRequired` = `(targetAmount - currentProgress) / monthsRemaining`, baselined from today — the live "what do I need to do from here" figure, distinct from the frozen `plannedMonthlySavings` above. See BR-21.
+- `monthsRemaining` = calendar months between today and `endDate`, ignoring day-of-month — see BR-21.
 - `savedThisMonth` = sum of TRANSFER transactions to this goal in current calendar month
 
 **An account may back more than one active goal (v1.5.0):** the original singular per-account goal lookup used for withdrawal crediting has been replaced by the allocation ledger (§3.6a) precisely to support this — an account like "Axis Bank" can simultaneously back an Emergency Fund and a Vacation goal, each tracked independently.
@@ -1342,6 +1343,8 @@ Both `POST /transactions` and `PUT /transactions/{id}` reject any `date` later t
 }
 ```
 
+`startDate` and `endDate` must both be today or later, and must clear a 1-month gap (calendar months, day-of-month ignored — see BR-21).
+
 **Response 201:**
 ```json
 {
@@ -1354,7 +1357,8 @@ Both `POST /transactions` and `PUT /transactions/{id}` reject any `date` later t
     "endDate": "2025-04-01",
     "currentProgress": 0.00,
     "progressPercentage": 0.0,
-    "monthlySavingsRequired": 9090.91,
+    "plannedMonthlySavings": 9090.91,
+    "currentMonthlySavingsRequired": 9090.91,
     "monthsRemaining": 11,
     "savedThisMonth": 0.00,
     "status": "IN_PROGRESS"
@@ -1362,7 +1366,7 @@ Both `POST /transactions` and `PUT /transactions/{id}` reject any `date` later t
 }
 ```
 
-`monthlySavingsRequired` = targetAmount / totalMonths (at creation). Recalculated on every read as progress increases.  
+`plannedMonthlySavings` = `targetAmount / totalMonths` (startDate to endDate) — frozen at creation, ignores progress entirely. `currentMonthlySavingsRequired` = `(targetAmount - currentProgress) / monthsRemaining`, recomputed from today on every read. The two start out equal and diverge the moment any progress is made — see BR-21.
 **Side effect:** Increments `user.onboardingStep` to 3 if currently 2.
 
 ---
@@ -1382,12 +1386,20 @@ Both `POST /transactions` and `PUT /transactions/{id}` reject any `date` later t
 }
 ```
 
-**Query params:** `status=IN_PROGRESS` · `status=UPCOMING`
+**Query params:** `status=IN_PROGRESS` · `status=COMPLETED`
 
 #### GET /goals/{id}
-#### PUT /goals/{id}
+
+#### PUT /goals/{id} — `{ name?, targetAmount?, accountId?, endDate? }`
+`startDate` is not accepted — immutable once created. `endDate` may move in either direction, subject to the same today-or-later and 1-month-gap checks as creation — see BR-21. `accountId` may only change while `currentProgress` is `0` (BR-21). `targetAmount` cannot drop below `currentProgress`. Changing `targetAmount` or `endDate` re-baselines `plannedMonthlySavings` from the (unchanged) `startDate` to the (possibly new) `endDate` — a deliberate re-plan, not a live recalculation. Rejected outright (`400`) once `status` is `COMPLETED` — see BR-22.
+
 #### DELETE /goals/{id} — soft delete
+
 #### PUT /goals/reorder — `[{ "id": "uuid", "displayOrder": 1 }, ...]`
+
+#### POST /goals/{id}/complete — marks a goal `COMPLETED`. Only allowed once `currentProgress >= targetAmount` (`400` otherwise, naming the remaining amount) — confirms the goal was reached, not a way to close it out early. Rejects if already `COMPLETED`. See BR-22.
+
+#### POST /goals/{id}/reopen — reverts a `COMPLETED` goal to `IN_PROGRESS` (e.g. completed by mistake). `400` if the goal isn't currently `COMPLETED`. See BR-22.
 
 ---
 
@@ -1582,7 +1594,8 @@ The service collects the `MonthSummary` data + goal progress + category breakdow
 | Daily expense limit | `balance / daysRemainingInMonth` | Monthly summary |
 | Debt-income ratio | `totalDebt / totalIncome × 100` | Monthly summary |
 | Savings rate | `totalSavings / totalIncome × 100` | Monthly summary |
-| Goal monthly required | `(targetAmount - currentProgress) / monthsToEnd` | Goal card |
+| Planned monthly savings *(v1.5.0)* | `targetAmount / totalMonths` (startDate to endDate), ignores progress — see BR-21 | Goal card |
+| Current monthly savings required *(v1.5.0)* | `(targetAmount - currentProgress) / monthsRemaining`, baselined from today — see BR-21 | Goal card |
 | Goal progress % | `currentProgress / targetAmount × 100` | Goal progress bar |
 | Free balance *(v1.5.0)* | `account.currentBalance - Σ(currentProgress of that account's active goals)` | Withdrawal allocation guard (BR-19) |
 | Days until due | `nextDueDate - today` | Planned amounts list |
@@ -1830,6 +1843,42 @@ The second trigger point of the same regression BR-19 addresses: a downward `PUT
 
 This closes the second half of the originally reported regression: a manual balance correction on a goal-linked account no longer leaves its linked goals' progress silently stale.
 
+
+### BR-21: Goal Target & Timeline Editing Guards *(added v1.5.0)*
+Four independent guards on `POST /goals` and `PUT /goals/{id}`, closing gaps where the original target/date editing logic had no validation at all.
+
+**`accountId` is locked once `currentProgress` is non-zero.** Moving a goal to a different account while it already holds progress would let the goal claim money the new account never actually funded — the same integrity concern BR-19 protects on the transaction side. `PUT /goals/{id}` rejects an `accountId` change (`400`, naming the current progress) unless `currentProgress` is exactly `0`; the destination account must also be active.
+
+**`startDate` is immutable.** It isn't accepted on `UpdateGoalRequest` at all — not validated-and-rejected, simply not a field the client can send. `startDate` anchors `plannedMonthlySavings`'s frozen baseline (below), so letting it move would let a user retroactively lower their own historical pace.
+
+**`endDate` can move in either direction**, extend or shorten, on both create and update. Two checks apply independently: it must be today or later (`400`, a distinct message from the gap check below), and it must still clear a 1-month gap from `startDate`. `startDate` itself is also validated as today-or-later, but only on create — not re-checked on update, since it's immutable and was already validated when the goal was created.
+
+**`targetAmount` cannot drop below `currentProgress`** on update — lowering the target below what's already saved would put the goal in an impossible negative-remaining state.
+
+**Calendar-month convention, used everywhere above and in both savings-pace fields below:** month gaps and remaining-month counts are computed by stripping the day-of-month off both dates before diffing (`date.withDayOfMonth(1)`), not by exact elapsed-day arithmetic. Oct 6 2026 → Nov 5 2027 reads as 13 months this way (12 calendar-month boundaries crossed from Oct to the following Nov), matching how a loan tenure or EMI schedule is read in practice, rather than 12 (one day short of a full exact-day cycle) under strict `ChronoUnit.MONTHS.between`. Accepted trade-off: a 1-day gap crossing a month boundary (e.g. Oct 31 → Nov 1) now also reads as "1 month" for the minimum-gap check — no separate day-based guard layered on top for that edge case.
+
+**`plannedMonthlySavings` vs. `currentMonthlySavingsRequired` — two distinct fields, replacing the original single `monthlySavingsRequired`:**
+- `plannedMonthlySavings` (serialized from the stored `monthlySavingsRequired` column) is the frozen plan: `targetAmount / totalMonths` (`startDate` to `endDate`), computed ignoring `currentProgress` entirely. Set at creation; re-baselined — recomputed from the same formula against the new values — only when `targetAmount` or `endDate` change via `PUT`. A deposit or withdrawal alone never touches it.
+- `currentMonthlySavingsRequired` (computed at read time, never stored) is the live figure: `(targetAmount - currentProgress) / monthsRemaining`, baselined from *today*, recomputed on every read.
+
+The two start out equal on a freshly created goal and diverge the moment any progress is made or time passes — `plannedMonthlySavings` answers "what did I commit to," `currentMonthlySavingsRequired` answers "what do I need to do from here." Earlier in development both were accidentally the same progress-subtracting formula under different baseline dates, making "planned" silently drift with every deposit instead of staying a fixed reference — corrected before shipping.
+
+### BR-22: Goal Completion Lifecycle *(added v1.5.0)*
+`status` has existed on the entity since MVP, but nothing in the codebase ever set it to `COMPLETED` — every check that branched on it (BR-12's account-protection release, BR-19's "non-completed goals" earmark total, blocking a TRANSFER into a completed goal) was dead code, reachable only by a direct database edit. Two explicit endpoints close the gap:
+
+**`POST /goals/{id}/complete`** sets `status = COMPLETED`, but only once `currentProgress >= targetAmount` — `400` otherwise, naming the amount still remaining. This confirms the goal was *reached*, not a way to close it out early; lowering `targetAmount` first (BR-21, bounded at `currentProgress`) is the explicit path for someone who wants to mark a goal done before hitting the original number. Rejects if already `COMPLETED`.
+
+**`POST /goals/{id}/reopen`** reverts `status` back to `IN_PROGRESS` — for undoing an accidental complete. `400` if the goal isn't currently `COMPLETED`.
+
+**A `COMPLETED` goal is locked from `PUT /goals/{id}` edits entirely** (`400`, checked before any other update validation) — editing target or dates on a goal that's already done has no meaningful effect and would be confusing to allow.
+
+**No `PAUSED` status, deliberately.** Considered and explicitly shelved — no concrete use case identified yet for a goal being paused rather than simply left `IN_PROGRESS` with no deposits. `PAUSED`/`UPCOMING` remain in the DB `CHECK` constraint (unused headroom from the original migration) but the application never sets either. See §11.
+
+### BR-23: Goal Progress Never Exceeds Target on Credit *(added v1.5.0)*
+A TRANSFER arriving into a goal via `toGoalId` already clamped its credit to the destination account's free balance (BR-19), but not to the goal's own remaining headroom — a transfer larger than what's left to reach `targetAmount` could push `currentProgress` past `targetAmount`, undermining BR-19's own earmark invariant from the other direction.
+
+**Fix:** the credit applied to the goal is now `min(transferAmount, freeBalance, remainingHeadroom)`, where `remainingHeadroom = targetAmount - currentProgress` (floored at `0`). The clamp is non-blocking, matching the existing free-balance clamp's shape — the TRANSFER itself still moves the full `transactionAmount` between the two accounts; only how much of it is credited toward the goal is capped. The difference is visible via `transaction.goalCreditApplied`, which can therefore be less than `transaction.amount`.
+
 ---
 
 ## 10. Screens-to-API Mapping
@@ -1877,7 +1926,7 @@ These items are consciously not part of the current MVP build. Listed here so re
 | `CC_CREDIT` transaction type + `totalCreditBill` metric | TransactionType enum | No `CreditCard` entity to attach to. Credit card spend logged as normal expense; `REPAYMENT` covers paying off a card. | Together with `CreditCard` entity. |
 | `Account.type` Savings/Current sub-classification | Original Excel data | App logic never behaves differently for Savings vs. Current — expressed informally via account `name`. | If a feature ever needs to behave differently per sub-type. |
 | Multi-currency support beyond INR | Domain overview | `Account.currency` field exists, defaults to `INR`, no conversion logic. | If/when non-INR user base becomes real. |
-| Goal `status` automatic transitions | Goal entity | Status field exists; transitions not automated — set manually. | Phase 2 Goal enhancements. |
+| Goal `status` *automatic* transitions | Goal entity | Manual completion is live (BR-22, v1.5.0) via `POST /goals/{id}/complete`/`reopen`. Only *automatic* transitions (e.g. auto-complete the instant `currentProgress` reaches `targetAmount`) remain deferred. | Phase 2 Goal enhancements. |
 | FD/RD (Fixed Deposits / Recurring Deposits) as account types | User discussion | Different financial instrument — lock-in, maturity, interest. Doesn't fit `Account` model. | Separate `Investment` module, post-MVP. |
 | `BalanceAfter` snapshot per transaction | Analytics discussion | Considered and deliberately rejected in favour of `currentBalance - sumNetAfterDate` approach for period-end balance queries. No new column needed. | If performance profiling shows the aggregation approach is insufficient at scale. |
 | Projected/forecast balance (`GET /planned-amounts/forecast?until=...` or similar) | BR-16 discussion — Excel template's month-to-month carry-forward | Genuinely valuable ("at this rate, you'll have ₹X by date Y"), but deliberately *not* built as future-dated `Transaction` rows (blocked by BR-16) — a forecast is a prediction, not a ledger fact, and the two must never share a table. Belongs on top of `PlannedAmount`: `currentBalance` + sum of active `PlannedAmount` occurrences due before the target date. Month-to-month balance carry-forward itself needs no new work — `account.currentBalance` (BR-05) already accumulates continuously with no monthly reset, unlike the Excel template's per-month-sheet structure. | Phase 2, after `PlannedAmount` is built. |
@@ -1920,5 +1969,6 @@ These items are consciously not part of the current MVP build. Listed here so re
 *v1.5.0 (same day): GET /transactions gained from/to date-range filtering (inclusive both ends, via a new TransactionSpecifications.inDateRange) to close a gap where only calendarYear/calendarMonth and financialYear/financialMonth existed and there was no way to filter by week. calendarYear/calendarMonth and financialYear/financialMonth are retained unchanged, since they carry real FY-math and smart-skip-navigation logic a client shouldn't reimplement; combining from/to with either legacy pair now returns 400 rather than silently picking one, and from/to must be supplied together with from <= to. GET /analytics/cashflow-summary's originally-planned mode/anchor (MONTHLY/WEEKLY) + CUSTOM query design was dropped before any frontend integration, in favor of the same plain from/to contract, once designing the transactions-side fix showed the mode-resolution logic (Monday-Sunday, 1st-to-last-day) was a one-line client computation with no business rule behind it — not worth maintaining server-side, especially since WEEKLY mode would have had no smart prev/next navigation anyway, unlike calendarYear/calendarMonth. Both endpoints now require from/to together and reject from > to with a consistent ApiException-shaped 400, not a framework-default error body. Embedding these KPIs directly into GET /transactions's response (considered, then shelved, during this same investigation) was deliberately deferred rather than built — parked for if/when a dedicated performance-metrics feature needs both the transaction rows and their aggregate in one call.*
 *v1.5.0 (same day): GET /transactions/available-periods gained earliestTransactionDate (a single MIN(date) across the user's transactions, null if none exist), giving the frontend the back-navigation boundary that the new from/to query model has no smart-skip logic of its own to provide. One shared value serves both GET /transactions and GET /analytics/cashflow-summary, since the latter has no data independent of the transactions table — there's no separate "earliest date analytics has" to compute. Used two ways on the frontend: gating the back arrow directly, and truncating a per-month week-list picker's earliest month at this exact date rather than at that month's calendar start, since monthsByYear only proves a month has some data, not that every week within it does.*
 *v1.5.0 (same day): introduced ApiErrorCodes, a small constant class for the few errors the frontend needs to branch on programmatically rather than just display — every ApiException had carried the same code as its HTTP status regardless of which business rule fired, forcing the client to pattern-match on free-text messages. GOAL_ALLOCATION_SHORTFALL is the first code, covering the three call sites that already shared the InsufficientFreeBalanceDetails payload (POST /transactions create, PUT /transactions/{id} tier 4, PUT /accounts/{id} balance correction) — one code for one situation with one correct frontend reaction, not a code per message. This surfaced a real bug in tier 4: it had been returning the prior allocation unchanged and relying on a generic downstream guard to reject it, which threw a plain "cannot exceed transfer amount" message with no structured details — correct wording for tier 1's case (client submitted a bad allocation) but wrong and unhelpful for tier 4 (the system reused a stale allocation the client never sent). Fixed so tier 4 throws directly with the correct code, a message that explains the previous allocation no longer fits, and the same structured payload create uses, computed fresh against the new amount. Verified end-to-end: the shortfall error now returns correctly, an explicit resupply (tier 1) succeeds, and — confirming no regression — increasing the amount once free balance exists still falls through to tier 2 silently, unchanged, with no error or warning.*
+*v1.5.0 (same day): Goal target/timeline editing hardened — see BR-21/22/23. `accountId` now locked once a goal carries progress; `startDate` made immutable; `endDate` editable in either direction with today-or-later and 1-month-gap checks; `targetAmount` floored at `currentProgress` on edit. Month arithmetic throughout goals (gap checks, monthsRemaining, both savings-pace fields) switched to a calendar-month convention that ignores day-of-month, matching how a loan tenure reads in practice. The original single `monthlySavingsRequired` field split into a frozen `plannedMonthlySavings` (targetAmount / totalMonths, ignores progress, re-baselined only on a targetAmount/endDate edit) and a live `currentMonthlySavingsRequired` (recomputed from today on every read) — previously both were the same progress-subtracting formula under different names, so the "planned" figure silently drifted with every deposit instead of staying a fixed reference. `status` lifecycle implemented for the first time via POST /goals/{id}/complete (only once currentProgress >= targetAmount) and POST /goals/{id}/reopen; a COMPLETED goal is now locked from PUT edits. A TRANSFER crediting a goal via toGoalId now also clamps to the goal's own remaining headroom (targetAmount - currentProgress), not just the destination account's free balance, closing a path where an oversized transfer could push currentProgress past targetAmount.*
 *Next: Analytics module frontend integration → Ionic frontend migration (Strapi → Moneyflow Spring Boot API).*
 </content>
