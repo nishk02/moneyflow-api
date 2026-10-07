@@ -493,8 +493,13 @@ public class TransactionService {
             goalRepository.findByIdAndUserId(transaction.getToGoalId(), transaction.getUser().getId())
                     .ifPresent(goal -> {
                         BigDecimal freeBalanceAfterDeposit = goalAllocationService.getFreeBalance(goal.getAccount());
+                        // Also clamp to remaining headroom under the goal's own target - the
+                        // TRANSFER still moves in full, only the credit to the goal is capped.
+                        BigDecimal remainingHeadroom = goal.getTargetAmount()
+                                .subtract(goal.getCurrentProgress()).max(BigDecimal.ZERO);
                         BigDecimal creditToGoal = transaction.getAmount()
-                                .min(freeBalanceAfterDeposit.max(BigDecimal.ZERO));
+                                .min(freeBalanceAfterDeposit.max(BigDecimal.ZERO))
+                                .min(remainingHeadroom);
 
                         goal.setCurrentProgress(goal.getCurrentProgress().add(creditToGoal));
                         goalRepository.save(goal);
