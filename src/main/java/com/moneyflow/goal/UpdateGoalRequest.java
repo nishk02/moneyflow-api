@@ -13,8 +13,6 @@ public record UpdateGoalRequest(
 
         String accountId,
 
-        LocalDate startDate,
-
         LocalDate endDate
 ) {
 }

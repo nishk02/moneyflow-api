@@ -60,4 +60,18 @@ public class GoalController extends BaseController {
         goalService.reorderGoals(userId, request);
         return ResponseEntity.noContent().build();
     }
+
+    @PostMapping("/{id}/complete")
+    public ResponseEntity<ApiResponse<GoalResponse>> completeGoal(@PathVariable String id) {
+        String userId = getCurrentUserId();
+        return ResponseEntity.ok(ApiResponse.success(
+                goalService.markGoalComplete(userId, id), "Goal marked as complete"));
+    }
+
+    @PostMapping("/{id}/reopen")
+    public ResponseEntity<ApiResponse<GoalResponse>> reopenGoal(@PathVariable String id) {
+        String userId = getCurrentUserId();
+        return ResponseEntity.ok(ApiResponse.success(
+                goalService.reopenGoal(userId, id), "Goal reopened"));
+    }
 }

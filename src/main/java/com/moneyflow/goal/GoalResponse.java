@@ -14,7 +14,8 @@ public record GoalResponse(
         LocalDate endDate,
         BigDecimal currentProgress,
         BigDecimal progressPercentage,
-        BigDecimal monthlySavingsRequired,
+        BigDecimal plannedMonthlySavings,
+        BigDecimal currentMonthlySavingsRequired,
         long monthsRemaining,
         String status,
         int displayOrder
@@ -30,7 +31,7 @@ public record GoalResponse(
         final BigDecimal progressPercentage = calculateProgressPercentage(goal);
 
         long monthsRemaining = goal.getEndDate() != null
-                ? Math.max(0, ChronoUnit.MONTHS.between(LocalDate.now(), goal.getEndDate()))
+                ? Math.max(0, monthsBetweenIgnoringDay(LocalDate.now(), goal.getEndDate()))
                 : 0;
 
         return new GoalResponse(
@@ -42,7 +43,8 @@ public record GoalResponse(
                 goal.getEndDate(),
                 goal.getCurrentProgress(),
                 progressPercentage,
-                calculateMonthlySavingsRequired(goal),
+                goal.getMonthlySavingsRequired(), // frozen plan, set at creation/re-plan
+                calculateCurrentMonthlySavingsRequired(goal), // live, recomputed from today
                 monthsRemaining,
                 goal.getStatus(),
                 goal.getDisplayOrder()
@@ -62,7 +64,7 @@ public record GoalResponse(
                 .divide(goal.getTargetAmount(), 1, RoundingMode.HALF_UP);
     }
 
-    private static BigDecimal calculateMonthlySavingsRequired(Goal goal) {
+    private static BigDecimal calculateCurrentMonthlySavingsRequired(Goal goal) {
         if (goal.getTargetAmount() == null || goal.getEndDate() == null) {
             return BigDecimal.ZERO;
         }
@@ -74,12 +76,17 @@ public record GoalResponse(
             return BigDecimal.ZERO;
         }
 
-        long monthsRemaining = Math.max(0, ChronoUnit.MONTHS.between(LocalDate.now(), goal.getEndDate()));
+        long monthsRemaining = Math.max(0, monthsBetweenIgnoringDay(LocalDate.now(), goal.getEndDate()));
 
         if (monthsRemaining <= 0) {
             return remainingAmount;
         }
 
         return remainingAmount.divide(BigDecimal.valueOf(monthsRemaining), 1, RoundingMode.HALF_UP);
+    }
+
+    /** Months between two dates, ignoring the day-of-month component. */
+    private static long monthsBetweenIgnoringDay(LocalDate start, LocalDate end) {
+        return ChronoUnit.MONTHS.between(start.withDayOfMonth(1), end.withDayOfMonth(1));
     }
 }

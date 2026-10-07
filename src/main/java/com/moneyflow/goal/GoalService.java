@@ -61,8 +61,16 @@ public class GoalService {
             throw ApiException.badRequest("Target amount must be greater than zero.");
         }
 
+        if (request.startDate() != null && request.startDate().isBefore(LocalDate.now())) {
+            throw ApiException.badRequest("Goal start date cannot be in the past.");
+        }
+
+        if (request.endDate() != null && request.endDate().isBefore(LocalDate.now())) {
+            throw ApiException.badRequest("Goal end date cannot be in the past.");
+        }
+
         if (request.startDate() != null && request.endDate() != null) {
-            long monthsBetween = ChronoUnit.MONTHS.between(request.startDate(), request.endDate());
+            long monthsBetween = monthsBetweenIgnoringDay(request.startDate(), request.endDate());
             if (monthsBetween < 1) {
                 throw ApiException.badRequest("The end date must be at least 1 month after the start date.");
             }
@@ -78,7 +86,7 @@ public class GoalService {
         goal.setEndDate(request.endDate());
         goal.setCurrentProgress(BigDecimal.ZERO);
 
-        goal.setMonthlySavingsRequired(calculateMonthlySavingsRequired(goal));
+        goal.setMonthlySavingsRequired(calculatePlannedMonthlySavings(goal));
 
         Goal savedGoal = goalRepository.save(goal);
         return GoalResponse.from(savedGoal);
@@ -116,16 +124,31 @@ public class GoalService {
             }
         }
 
-        if (request.startDate() != null || request.endDate() != null) {
-            LocalDate finalStartDate = request.startDate() != null ? request.startDate() : goal.getStartDate();
-            LocalDate finalEndDate = request.endDate() != null ? request.endDate() : goal.getEndDate();
+        // Account can only change while currentProgress is still 0 - otherwise the goal would
+        // claim money the new account never actually funded (same shape as Bug #1).
+        if (request.accountId() != null && !request.accountId().equals(goal.getAccount().getId())) {
+            BigDecimal progress = goal.getCurrentProgress() != null ? goal.getCurrentProgress() : BigDecimal.ZERO;
+            if (progress.compareTo(BigDecimal.ZERO) != 0) {
+                throw ApiException.badRequest(
+                        "Cannot move '" + goal.getName() + "' to a different account while it has ₹" + progress +
+                                " in progress. Bring its progress to ₹0 first (e.g. withdraw it out)," +
+                                " or create a new goal instead.");
+            }
+            if (!account.isActive()) {
+                throw ApiException.badRequest("Destination account is inactive.");
+            }
+        }
 
-            if (finalStartDate != null && finalEndDate != null) {
-                long monthsBetween = ChronoUnit.MONTHS.between(finalStartDate, finalEndDate);
+        // startDate is immutable (it anchors the frozen "planned" pace). endDate can move
+        // either way, as long as it clears the 1-month gap and isn't in the past.
+        if (request.endDate() != null) {
+            if (request.endDate().isBefore(LocalDate.now())) {
+                throw ApiException.badRequest("Goal end date cannot be in the past.");
+            }
 
-                if (monthsBetween < 1) {
-                    throw ApiException.badRequest("The end date must be at least 1 month after the start date.");
-                }
+            long monthsBetween = monthsBetweenIgnoringDay(goal.getStartDate(), request.endDate());
+            if (monthsBetween < 1) {
+                throw ApiException.badRequest("The end date must be at least 1 month after the start date.");
             }
         }
 
@@ -133,7 +156,7 @@ public class GoalService {
             goal.setName(request.name());
         }
 
-        // Check if values affecting savings calculation are changing
+        // Check if values affecting the planned-pace calculation are changing
         boolean budgetOrTimelineChanged = request.targetAmount() != null || request.endDate() != null;
 
         if (request.targetAmount() != null) {
@@ -144,21 +167,58 @@ public class GoalService {
             goal.setAccount(account);
         }
 
-        if (request.startDate() != null) {
-            goal.setStartDate(request.startDate());
-        }
-
         if (request.endDate() != null) {
             goal.setEndDate(request.endDate());
         }
 
         if (budgetOrTimelineChanged) {
-            BigDecimal updatedSavings = calculateMonthlySavingsRequired(goal);
-            goal.setMonthlySavingsRequired(updatedSavings);
+            BigDecimal updatedPlannedSavings = calculatePlannedMonthlySavings(goal);
+            goal.setMonthlySavingsRequired(updatedPlannedSavings);
         }
 
         Goal savedGoal = goalRepository.save(goal);
 
+        return GoalResponse.from(savedGoal);
+    }
+
+    /**
+     * Only allowed once currentProgress has reached targetAmount - confirms the goal was
+     * reached, not a way to close it out early.
+     */
+    @Transactional
+    public GoalResponse markGoalComplete(String userId, String goalId) {
+        Goal goal = goalRepository.findByIdAndUserId(goalId, userId)
+                .orElseThrow(() -> ApiException.notFound("Goal not found"));
+
+        if ("COMPLETED".equalsIgnoreCase(goal.getStatus())) {
+            throw ApiException.badRequest("This goal is already marked complete.");
+        }
+
+        BigDecimal progress = goal.getCurrentProgress() != null ? goal.getCurrentProgress() : BigDecimal.ZERO;
+        if (progress.compareTo(goal.getTargetAmount()) < 0) {
+            BigDecimal remaining = goal.getTargetAmount().subtract(progress);
+            throw ApiException.badRequest(
+                    "'" + goal.getName() + "' hasn't reached its target yet — ₹" + remaining +
+                            " still remaining. Keep saving, or lower the target if you want to close it out now.");
+        }
+
+        goal.setStatus("COMPLETED");
+        Goal savedGoal = goalRepository.save(goal);
+        return GoalResponse.from(savedGoal);
+    }
+
+    /** Undoes markGoalComplete, e.g. if completed by mistake. */
+    @Transactional
+    public GoalResponse reopenGoal(String userId, String goalId) {
+        Goal goal = goalRepository.findByIdAndUserId(goalId, userId)
+                .orElseThrow(() -> ApiException.notFound("Goal not found"));
+
+        if (!"COMPLETED".equalsIgnoreCase(goal.getStatus())) {
+            throw ApiException.badRequest("Only a completed goal can be reopened.");
+        }
+
+        goal.setStatus("IN_PROGRESS");
+        Goal savedGoal = goalRepository.save(goal);
         return GoalResponse.from(savedGoal);
     }
 
@@ -192,25 +252,27 @@ public class GoalService {
         goalRepository.saveAll(userGoals);
     }
 
-    private BigDecimal calculateMonthlySavingsRequired(Goal goal) {
-        if (goal.getTargetAmount() == null || goal.getEndDate() == null) {
+    /** Static plan: targetAmount / total months, ignores progress. */
+    private BigDecimal calculatePlannedMonthlySavings(Goal goal) {
+        if (goal.getTargetAmount() == null || goal.getEndDate() == null || goal.getStartDate() == null) {
             return BigDecimal.ZERO;
         }
 
-        BigDecimal currentProgress = goal.getCurrentProgress() != null ? goal.getCurrentProgress() : BigDecimal.ZERO;
-        BigDecimal remainingAmount = goal.getTargetAmount().subtract(currentProgress);
-
-        if (remainingAmount.compareTo(BigDecimal.ZERO) <= 0) {
+        if (goal.getTargetAmount().compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
 
-        LocalDate baselineDate = goal.getStartDate() != null ? goal.getStartDate() : LocalDate.now();
-        long monthsRemaining = ChronoUnit.MONTHS.between(baselineDate, goal.getEndDate());
+        long totalMonths = monthsBetweenIgnoringDay(goal.getStartDate(), goal.getEndDate());
 
-        if (monthsRemaining <= 0) {
-            return remainingAmount;
+        if (totalMonths <= 0) {
+            return goal.getTargetAmount();
         }
 
-        return remainingAmount.divide(BigDecimal.valueOf(monthsRemaining), 1, RoundingMode.HALF_UP);
+        return goal.getTargetAmount().divide(BigDecimal.valueOf(totalMonths), 1, RoundingMode.HALF_UP);
+    }
+
+    /** Months between two dates, ignoring the day-of-month component. */
+    private static long monthsBetweenIgnoringDay(LocalDate start, LocalDate end) {
+        return ChronoUnit.MONTHS.between(start.withDayOfMonth(1), end.withDayOfMonth(1));
     }
 }
